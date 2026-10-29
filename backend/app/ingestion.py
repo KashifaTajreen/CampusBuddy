@@ -26,23 +26,48 @@ from backend.app.retrieval import extract_pages, chunks, embeddings
 from backend.app.storage import ObjectStore
 from backend.app.auth import resolve_actor
 from backend.app.services import CampusService
+from backend.app.config import settings
 
 MAX_BYTES = 15 * 1024 * 1024
 ALIASES = {
     "item name": "name",
     "item": "name",
+    "food": "name",
+    "dish": "name",
     "cost": "price",
+    "rate": "price",
+    "amount": "price",
     "faculty": "faculty_code",
     "faculty id": "faculty_code",
+    "faculty code": "faculty_code",
+    "instructor": "faculty_code",
+    "teacher": "faculty_code",
+    "course_code": "subject",
+    "course code": "subject",
+    "course_name": "subject",
+    "course name": "subject",
+    "course": "subject",
+    "subject name": "subject",
+    "subject_name": "subject",
     "start time": "start_time",
     "end time": "end_time",
     "start date": "effective_from",
     "end date": "effective_to",
+    "classroom": "room",
+    "class room": "room",
+    "room number": "room",
+    "room no": "room",
+    "room_no": "room",
+    "hall": "room",
+    "sem": "semester",
+    "sec": "section",
     "office location": "office",
     "subjects taught": "subjects",
     "estimated protein": "protein",
     "estimated calories": "calories",
     "canteen location": "location",
+    "canteen": "location",
+    "place": "location",
     "availability": "available",
     "veg": "vegetarian",
     "day of week": "day",
@@ -63,8 +88,46 @@ def read_table(filename, content):
         if not isinstance(data, list):
             raise ValueError("JSON input must be a list of records.")
         frame = pd.DataFrame(data).fillna("")
+    elif suffix in (".png", ".jpg", ".jpeg"):
+        config = settings()
+        if not config.gemini_api_key:
+            raise ValueError("Image table extraction requires GEMINI_API_KEY.")
+        import base64
+        import httpx
+        b64_data = base64.b64encode(content).decode("utf-8")
+        mime = "image/png" if suffix == ".png" else "image/jpeg"
+        prompt = (
+            "Extract all tabular or listed rows from this campus schedule/menu/faculty image into a flat JSON array of objects. "
+            "For timetable: include day, period, start_time (HH:MM), end_time (HH:MM), subject (course name), faculty_code, room (classroom), semester, section. "
+            "For canteen/menu: include name (item name), category, price, vegetarian (true/false), location. "
+            "For faculty: include name, department, role, email, office. "
+            "Return ONLY the JSON array."
+        )
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.gemini_model}:generateContent"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime, "data": b64_data}}
+                ]
+            }],
+            "generationConfig": {"temperature": 0, "responseMimeType": "application/json"}
+        }
+        with httpx.Client(timeout=45) as client:
+            resp = client.post(url, headers={"x-goog-api-key": config.gemini_api_key}, json=payload)
+            resp.raise_for_status()
+            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            data = json.loads(raw_text)
+            if isinstance(data, dict):
+                for v in data.values():
+                    if isinstance(v, list):
+                        data = v
+                        break
+            if not isinstance(data, list) or not data:
+                raise ValueError("Could not extract rows from image.")
+            frame = pd.DataFrame(data).fillna("")
     else:
-        raise ValueError("Use CSV, XLSX or a JSON list.")
+        raise ValueError("Use CSV, XLSX, JSON or Image (PNG/JPG).")
     if not 1 <= len(frame) <= 10000:
         raise ValueError("Import between 1 and 10,000 records.")
     if len(frame.columns) > 100:
@@ -103,6 +166,9 @@ def normalize(value, field):
             return True
         if v in ("no", "false", "0", "0.0", "non-veg", "non-vegetarian", "unavailable"):
             return False
+    if field in ("price", "calories", "protein"):
+        m = re.search(r"(-?\d+(?:\.\d+)?)", str(value).replace(",", ""))
+        return float(m[1]) if m else 0.0
     if field in ("published", "expires", "effective_from", "effective_to", "date"):
         return str(value)[:10]
     return value
@@ -112,6 +178,12 @@ def validate_records(frame, kind, mapping, service, department):
     schema = DOMAIN_SCHEMAS[kind]
     errors = []
     rows = []
+    valid_faculty_codes = None
+    if kind == "timetable":
+        try:
+            valid_faculty_codes = {f["code"] for f in service.records("faculty")}
+        except Exception:
+            valid_faculty_codes = None
     for index, raw in frame.iterrows():
         try:
             data = {
@@ -120,6 +192,26 @@ def validate_records(frame, kind, mapping, service, department):
                 if col in frame.columns and field in schema.model_fields and str(raw[col]) != ""
             }
             data.setdefault("department", department)
+            if kind in ("menu", "canteen"):
+                if not data.get("location"):
+                    data["location"] = "Campus Canteen"
+                if not data.get("category"):
+                    data["category"] = "General"
+                data.setdefault("vegetarian", True)
+                data.setdefault("available", True)
+            elif kind == "timetable":
+                if not data.get("department") or data["department"] == "All":
+                    data["department"] = department if department != "All" else "AIML"
+                if not data.get("semester"):
+                    data["semester"] = 3
+                if not data.get("section"):
+                    data["section"] = "A"
+                if not data.get("room"):
+                    data["room"] = "LH-101"
+                if not data.get("effective_from"):
+                    data["effective_from"] = str(datetime.now().date())
+                if not data.get("effective_to"):
+                    data["effective_to"] = str(datetime.now().date() + timedelta(days=180))
             if kind == "emails" and not data.get("extracted_dates"):
                 data["extracted_dates"] = sorted(
                     set(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", str(data.get("body", ""))))
@@ -127,7 +219,7 @@ def validate_records(frame, kind, mapping, service, department):
             row = schema.model_validate(data).model_dump(mode="json")
             if kind not in ("emails",):
                 service.actor.check_department_write(row.get("department", department))
-            if kind == "timetable" and not service.faculty(code=row["faculty_code"]):
+            if kind == "timetable" and valid_faculty_codes is not None and row["faculty_code"] not in valid_faculty_codes:
                 raise ValueError("Faculty code was not found. Import faculty first, then map faculty_code.")
             rows.append(row)
         except (ValidationError, ValueError) as exc:
@@ -193,11 +285,11 @@ class Ingestion:
             raise ValueError("Choose a nonempty file smaller than 15 MB.")
         filename = Path(filename).name[:255]
         allowed = (
-            {".pdf", ".txt", ".md"}
+            {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg"}
             if options.kind == "document"
             else {".csv", ".xlsx", ".json", ".eml"}
             if options.kind == "emails"
-            else {".csv", ".xlsx", ".json"}
+            else {".csv", ".xlsx", ".json", ".png", ".jpg", ".jpeg"}
         )
         if Path(filename).suffix.lower() not in allowed:
             raise ValueError("Unsupported file type for this import.")
@@ -217,6 +309,10 @@ class Ingestion:
                 )
             )
             if job:
+                if job.status == "failed":
+                    job.status = "received"
+                    job.error = None
+                    self.preview(job)
                 return job
         sid = uid()
         key = f"{a.tenant_id}/{sid}/{checksum}"
@@ -302,7 +398,12 @@ class Ingestion:
             else:
                 filename = source.filename
             frame = read_table(filename, content)
-            selected = options.mapping or detect_mapping(frame.columns, options.kind)
+            if mapping is not None:
+                selected = mapping
+            elif options.mapping and all(col in frame.columns for col in options.mapping.values()):
+                selected = options.mapping
+            else:
+                selected = detect_mapping(frame.columns, options.kind)
             options.mapping = selected
             job.options = options.model_dump(mode="json")
             rows, errors = validate_records(frame, options.kind, selected, self.c, options.department)
@@ -418,16 +519,21 @@ class Ingestion:
                 )
             if errors:
                 raise ValueError("Source validation changed. Preview and validate again.")
-            for row in rows:
-                owner = c.actor.user_id if options.kind == "emails" else None
-                key = natural_key(options.kind, row, owner)
-                record = c.db.scalar(
+            owner = c.actor.user_id if options.kind == "emails" else None
+            keys = [natural_key(options.kind, r, owner) for r in rows]
+            existing_records = {
+                r.natural_key: r
+                for r in c.db.scalars(
                     select(CampusRecord).where(
                         CampusRecord.tenant_id == c.actor.tenant_id,
                         CampusRecord.kind == options.kind,
-                        CampusRecord.natural_key == key,
+                        CampusRecord.natural_key.in_(keys),
                     )
-                )
+                ).all()
+            }
+            for row in rows:
+                key = natural_key(options.kind, row, owner)
+                record = existing_records.get(key)
                 if record:
                     if record.owner_id != owner:
                         raise ValueError("The record owner does not match this import.")
@@ -499,10 +605,7 @@ def work_once(session_factory, store=None):
             db.rollback()
             job = db.get(IngestionJob, job_id)
             job.status = "failed"
-            job.error = (
-                str(exc.detail if isinstance(exc, HTTPException) else exc)[:400]
-                if isinstance(exc, (ValueError, HTTPException))
-                else "Import failed safely. Check file contents and worker configuration, then retry."
-            )
+            err_msg = str(getattr(exc, "detail", exc))[:400]
+            job.error = err_msg if err_msg else "Import failed safely. Check file contents and worker configuration, then retry."
             db.commit()
     return True

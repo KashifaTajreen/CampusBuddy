@@ -58,7 +58,7 @@ def seed(db, user_id, tenant_id=DEMO_TENANT, anchor=None, store=None):
                 diet="vegetarian",
             )
         )
-        db.flush()
+        db.commit()
     c = CampusService(db, resolve_actor(db, user_id, tenant_id))
     ingestion = Ingestion(c, store)
 
@@ -75,7 +75,7 @@ def seed(db, user_id, tenant_id=DEMO_TENANT, anchor=None, store=None):
             ingestion.confirm(job)
             ingestion.process(job)
             job.status = "completed"
-            db.flush()
+            db.commit()
         return job
 
     faculty = []

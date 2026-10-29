@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -11,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from backend.app.config import settings
-from backend.app.db import initialize_local, set_identity, validate_production_role
+from backend.app.db import initialize_local, set_identity, validate_production_role, SessionLocal
 from backend.app.auth import actor, authenticated_user, get_session, Actor, TOP_ROLES, rate_limit
 from backend.app.models import (
     Institution,
@@ -42,9 +43,31 @@ async def lifespan(app):
     initialize_local()
     validate_production_role()
     from backend.app.mcp_server import mcp
+    from backend.app.ingestion import work_once
 
-    async with mcp.session_manager.run():
-        yield
+    async def in_process_worker():
+        logger.info("Embedded background worker started.")
+        while True:
+            try:
+                worked = await asyncio.to_thread(work_once, SessionLocal)
+                if not worked:
+                    await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"In-process worker error: {e}")
+                await asyncio.sleep(5)
+
+    worker_task = asyncio.create_task(in_process_worker())
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -55,10 +78,12 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings().frontend_origin],
+    allow_origins=[settings().frontend_origin, "http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origin_regex=r"https://.*\.vercel\.app|http://localhost:\d+|http://127\.0\.0\.1:\d+",
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Tenant-ID"],
+    allow_private_network=True,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Request-ID"],
 )
 

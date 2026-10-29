@@ -383,8 +383,8 @@ export function AdminView({
                         type="file"
                         accept={
                           kind === "document"
-                            ? ".pdf,.txt,.md"
-                            : ".csv,.xlsx,.json"
+                            ? ".pdf,.txt,.md,.png,.jpg,.jpeg"
+                            : ".csv,.xlsx,.json,.png,.jpg,.jpeg"
                         }
                         onChange={(e) => setFile(e.target.files?.[0] || null)}
                       />

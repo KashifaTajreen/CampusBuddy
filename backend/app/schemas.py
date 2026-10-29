@@ -42,12 +42,12 @@ class MenuData(Strict):
     name: str = Field(min_length=1, max_length=150)
     price: float = Field(ge=0, le=10000)
     vegetarian: bool
-    category: str = Field(max_length=100)
+    category: str = Field(default="General", max_length=100)
     available: bool = True
     calories: float | None = Field(default=None, ge=0, le=10000)
     protein: float | None = Field(default=None, ge=0, le=500)
     nutrition_verified: bool = False
-    location: str = Field(min_length=1, max_length=200)
+    location: str = Field(default="Campus Canteen", min_length=1, max_length=200)
     department: str = Field(default="All", max_length=60)
 
 

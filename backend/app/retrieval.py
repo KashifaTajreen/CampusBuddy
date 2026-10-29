@@ -34,6 +34,35 @@ def embeddings(texts):
         return model.encode(texts, normalize_embeddings=True).tolist(), "sentence-transformers:" + Path(
             settings().embedding_model_path
         ).name
+    config = settings()
+    if config.gemini_api_key and config.app_env != "test" and texts:
+        try:
+            import httpx
+            reqs = [
+                {
+                    "model": "models/gemini-embedding-001",
+                    "content": {"parts": [{"text": str(t)[:2000]}]},
+                    "outputDimensionality": 384,
+                }
+                for t in texts
+            ]
+            vectors = []
+            for i in range(0, len(reqs), 50):
+                batch = reqs[i : i + 50]
+                with httpx.Client(timeout=15) as client:
+                    resp = client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents?key={config.gemini_api_key}",
+                        json={"requests": batch},
+                    )
+                if resp.status_code == 200:
+                    for emb in resp.json().get("embeddings", []):
+                        vals = emb.get("values", [])
+                        if len(vals) == 384:
+                            vectors.append(vals)
+            if len(vectors) == len(texts):
+                return vectors, "gemini-embedding-001:384"
+        except Exception:
+            pass
     return HashingVectorizer(n_features=384, alternate_sign=False, norm="l2").transform(
         texts
     ).toarray().tolist(), "lexical-hashing-v1:384"
@@ -47,6 +76,38 @@ def injection(text):
             re.I,
         )
     )
+
+
+def ocr_scanned_pdf(document):
+    config = settings()
+    if not config.gemini_api_key:
+        return []
+    import base64
+    import httpx
+    ocr_pages = []
+    for i, page in enumerate(document):
+        pix = page.get_pixmap(dpi=150)
+        png_bytes = pix.tobytes("png")
+        b64_data = base64.b64encode(png_bytes).decode("utf-8")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.gemini_model}:generateContent"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": "Transcribe all text from this scanned academic document page accurately into markdown. Preserve tables, dates, numbers, headings, and structure."},
+                    {"inline_data": {"mime_type": "image/png", "data": b64_data}}
+                ]
+            }]
+        }
+        try:
+            with httpx.Client(timeout=45) as client:
+                resp = client.post(url, headers={"x-goog-api-key": config.gemini_api_key}, json=payload)
+                resp.raise_for_status()
+                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                if text.strip():
+                    ocr_pages.append((i + 1, text))
+        except Exception:
+            continue
+    return ocr_pages
 
 
 def extract_pages(filename, content):
@@ -63,6 +124,8 @@ def extract_pages(filename, content):
                 if len(document) > 200:
                     raise ValueError("Split PDFs larger than 200 pages.")
                 pages = [(i + 1, p.get_text()) for i, p in enumerate(document)]
+                if not any(t.strip() for _, t in pages):
+                    pages = ocr_scanned_pdf(document)
         except RuntimeError as exc:
             raise ValueError("Unreadable PDF. Export it again and retry.") from exc
     elif suffix in (".txt", ".md"):
@@ -70,8 +133,30 @@ def extract_pages(filename, content):
             pages = [(1, content.decode("utf-8-sig"))]
         except UnicodeDecodeError as exc:
             raise ValueError("Use UTF-8 encoded text.") from exc
+    elif suffix in (".png", ".jpg", ".jpeg"):
+        config = settings()
+        if not config.gemini_api_key:
+            raise ValueError("Image OCR requires GEMINI_API_KEY.")
+        import base64
+        import httpx
+        b64_data = base64.b64encode(content).decode("utf-8")
+        mime = "image/png" if suffix == ".png" else "image/jpeg"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.gemini_model}:generateContent"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": "Transcribe all text from this campus notice/document image accurately into markdown. Preserve tables, dates, numbers, headings, and structure."},
+                    {"inline_data": {"mime_type": mime, "data": b64_data}}
+                ]
+            }]
+        }
+        with httpx.Client(timeout=45) as client:
+            resp = client.post(url, headers={"x-goog-api-key": config.gemini_api_key}, json=payload)
+            resp.raise_for_status()
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            pages = [(1, text)]
     else:
-        raise ValueError("Use PDF, TXT or Markdown documents.")
+        raise ValueError("Use PDF, TXT, Markdown, PNG or JPG documents.")
     if not any(t.strip() for _, t in pages):
         raise ValueError("No readable text found. Run OCR on scanned pages first.")
     if sum(len(t) for _, t in pages) > 2_000_000:
@@ -157,9 +242,9 @@ class Retrieval:
                 0.7 * lexical[ix] + 0.3 * max(0, vector_score) + (0.04 if row.id in keyword_ids else 0)
             )
         picked = sorted(
-            [(r, float(score)) for r, score in zip(candidates, scores) if score >= 0.075],
+            [(r, float(score)) for r, score in zip(candidates, scores) if score >= 0.05],
             key=lambda pair: -pair[1],
-        )[:limit]
+        )[:max(limit, 8)]
         hits = []
 
         def hit(row, score):
