@@ -10,6 +10,7 @@ import {
 } from "@/components/campus-app";
 import { type DataRecord, campusDate, prettyDate } from "@/lib/api";
 import { RecordList, Empty, RecordCard } from "@/components/result-cards";
+import { TimetableGrid } from "@/components/timetable-grid";
 import { Button } from "@/components/ui/button";
 
 const descriptions: Partial<Record<Page, string>> = {
@@ -245,7 +246,11 @@ export function BrowseView({ w, page }: { w: Workspace; page: Page }) {
           </section>
         </>
       ) : page === "Timetable" && tab === "week" ? (
-        <WeekGrid records={rows} date={date} onSource={w.download} />
+        <TimetableGrid
+          records={rows}
+          caption={`Timetable for the week of ${prettyDate(date)}`}
+          onSource={w.download}
+        />
       ) : (
         <>
           <div className="section-header">

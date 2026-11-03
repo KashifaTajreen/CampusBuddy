@@ -120,5 +120,5 @@ def actor(
     session: Session = Depends(get_session),
 ):
     context = resolve_actor(session, user_id, x_tenant_id)
-    rate_limit(session, f"{context.tenant_id}:{context.user_id}")
+    rate_limit(session, f"{context.tenant_id}:{context.user_id}", settings().rate_limit_per_minute)
     return context

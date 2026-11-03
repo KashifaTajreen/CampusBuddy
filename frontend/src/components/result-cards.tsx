@@ -1,5 +1,7 @@
 "use client";
+import { useId, useState } from "react";
 import {
+  ChevronDown,
   MapPin,
   Clock3,
   UserRound,
@@ -28,6 +30,27 @@ export function Empty({
       <FileText size={24} aria-hidden="true" />
       <strong>{message}</strong>
       <p>{hint}</p>
+    </div>
+  );
+}
+function FacultyBio({ bio, name }: { bio: string; name: string }) {
+  const [open, setOpen] = useState(false);
+  const panel = useId();
+  return (
+    <div className="faculty-bio">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panel}
+        aria-label={`${open ? "Hide" : "Show"} biography of ${name}`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <ChevronDown size={14} aria-hidden="true" />
+        {open ? "Hide biography" : "Show biography"}
+      </button>
+      <p id={panel} hidden={!open}>
+        {bio}
+      </p>
     </div>
   );
 }
@@ -111,11 +134,34 @@ export function RecordCard({
             {text(r.office_hours)}
           </span>
         </div>
+        {!!(r.qualification || r.experience || r.research_areas) && (
+          <dl className="faculty-profile">
+            {!!r.qualification && (
+              <div>
+                <dt>Qualification</dt>
+                <dd>{text(r.qualification)}</dd>
+              </div>
+            )}
+            {!!r.experience && (
+              <div>
+                <dt>Experience</dt>
+                <dd>{text(r.experience)}</dd>
+              </div>
+            )}
+            {!!r.research_areas && (
+              <div>
+                <dt>Research areas</dt>
+                <dd>{text(r.research_areas)}</dd>
+              </div>
+            )}
+          </dl>
+        )}
         {!!r.contact && (
           <p className="official-contact">
             Official contact: {text(r.contact)}
           </p>
         )}
+        {!!r.bio && <FacultyBio bio={text(r.bio)} name={text(r.name)} />}
       </>
     );
   else if (kind === "events")

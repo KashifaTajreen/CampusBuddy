@@ -113,6 +113,8 @@ def run():
     os.environ["SUPABASE_URL"] = BASE
     os.environ["FRONTEND_ORIGIN"] = "http://127.0.0.1:3000"
     os.environ["APP_ENV"] = "development"
+    # The whole suite signs in as the same few users within one minute.
+    os.environ["RATE_LIMIT_PER_MINUTE"] = "5000"
     from backend.app.db import SessionLocal, initialize_local, engine
     from backend.app.models import Membership, Base
     from backend.app.seed import seed, DEMO_TENANT

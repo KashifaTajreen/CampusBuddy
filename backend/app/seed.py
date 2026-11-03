@@ -101,6 +101,10 @@ def seed(db, user_id, tenant_id=DEMO_TENANT, anchor=None, store=None):
                     office=f"Block {chr(65 + di)}, Room {210 + i}",
                     office_hours="Mon–Fri, 15:00–16:00",
                     contact=f"faculty{di * 8 + i + 1}@example.invalid",
+                    qualification="PhD" if i % 2 == 0 else "MTech",
+                    experience=f"{5 + i} years",
+                    research_areas=subjects[i % 5] + " education",
+                    bio=f"Demo Data. Synthetic profile for a {dept} teaching faculty member.",
                 )
             )
     ingest("faculty", faculty)

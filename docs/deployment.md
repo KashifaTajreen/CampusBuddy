@@ -47,6 +47,8 @@ $env:TEST_POSTGRES_URL=$env:DATABASE_URL
 
 Never point this test suite at a production database. CI uses `pgvector/pgvector:pg16` with disposable credentials.
 
+On Supabase the owner login is not a superuser, so the tests first need `GRANT campus_api TO postgres WITH SET TRUE, INHERIT FALSE;` to switch into the restricted role. Seeding over a slow connection can take about 20 minutes the first time.
+
 ## 3. Private storage
 
 Create a **private** Supabase Storage bucket named `campus-sources`. Do not add public download policies. The server uses its service-role key to store files and streams originals only after tenant/owner/department authorization. Keep the key in server secrets.
@@ -81,7 +83,25 @@ Set `APP_ENV=production` only after PostgreSQL, restricted API credentials, HTTP
 
 ## 5. Optional AI and integrations
 
-The core assistant requires neither an LLM key nor a model download. To add local semantic retrieval, install `requirements-semantic.txt`, pre-download a 384-dimensional sentence-transformers model, set `EMBEDDING_MODEL_PATH` to that directory and re-index documents. Check the model license and hardware needs. Changing its contents requires re-indexing.
+The core assistant requires neither an LLM key nor a model download. To run local AI, install [Ollama](https://ollama.com) and `requirements-semantic.txt`, then:
+
+```sh
+ollama pull qwen3.5:9b
+ollama pull bge-m3
+```
+
+Set these in the server environment and re-index documents. Changing the embedding model always requires re-indexing:
+
+```sh
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=qwen3.5:9b
+OLLAMA_EMBEDDING_MODEL=bge-m3
+ROUTING_MODE=hybrid
+RERANKER_MODEL_PATH=data/models/bge-reranker-v2-m3
+SPEECH_MODEL=data/models/faster-whisper-small
+```
+
+In the benchmark on an 8 GB GPU, `qwen3.5:9b` (recorded as `qwen3.5:latest` in the benchmark file, the same model digest) ran 88% on the GPU and the rest in system memory; `qwen3.5:2b` is the lower-memory option. Download the reranker and faster-whisper models to the folders above; they are never fetched automatically. Compare models with `python scripts/benchmark_models.py retrieval` and `python scripts/benchmark_models.py llm <models>`. Check each model's license before use.
 
 For optional synthesis, provide a Gemini API key and enabled model in the server environment. Requests are sent only for permitted document passages. Obtain institutional approval for sending those passages to an external provider. Requests have timeouts, validated output and extractive fallback. Live provider behaviour was not verified without credentials.
 
@@ -102,7 +122,7 @@ Add authorized test users while Google consent is in testing. The UI starts a PK
 | Blank/scanned PDF | Run OCR before upload; password-protected PDFs must be unlocked. |
 | Failed job | Review the reported error, fix the file or configuration, then preview/retry. |
 | Missing document answer | Search a specific subject, verify scope/expiry and check ingestion status. |
-| Wrong vector dimension | Use a 384-dimensional local model and re-index. |
+| Wrong vector dimension | Use a 1024-dimensional model such as `bge-m3` and re-index. |
 | RLS/permission errors | Review API grants, restricted role membership and transaction-local identity. |
 | Windows socketpair/browser startup hangs in a sandbox | Run local tests with loopback networking allowed. This build required that permission. |
 | Turbopack process error | Project scripts use the supported Webpack path, which built successfully. |

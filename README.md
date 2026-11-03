@@ -13,6 +13,8 @@ A production-oriented campus intelligence **vertical slice**: Next.js + TypeScri
 - CSV/XLSX/JSON column mapping, validation, import confirmation, idempotency, background worker and re-indexing.
 - Server-side institution/department/owner permissions, membership administration, private email imports and query traces.
 - Official MCP SDK with 14 shared read-only tools over stdio and bearer-authenticated Streamable HTTP.
+- Optional local AI through Ollama: semantic retrieval with rank fusion and reranking, grounded answers and a bounded tool-calling agent. See [deployment](docs/deployment.md).
+- Voice questions transcribed locally, a timetable week grid, an administrator timetable editor with clash checks, and faculty profiles.
 - Optional encrypted Google read-only connections and optional Gemini synthesis. Missing configuration produces an actionable error, never a simulated connection.
 
 ## Quick start · Windows PowerShell

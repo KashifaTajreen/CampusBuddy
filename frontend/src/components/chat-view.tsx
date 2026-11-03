@@ -7,8 +7,11 @@ import {
   Trash2,
   Sparkles,
   LoaderCircle,
+  Mic,
+  Square,
 } from "lucide-react";
 import { api, streamChat, type Answer } from "@/lib/api";
+import { MAX_RECORDING_SECONDS, useVoiceInput } from "@/lib/use-voice-input";
 import { Button } from "@/components/ui/button";
 import { RecordList } from "@/components/result-cards";
 import {
@@ -17,6 +20,9 @@ import {
   ErrorBox,
   QuickActions,
 } from "@/components/campus-app";
+function formatSeconds(total: number) {
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
 interface Turn {
   role: "user" | "assistant";
   text?: string;
@@ -43,6 +49,26 @@ export function ChatView({
   const abort = useRef<AbortController | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const handled = useRef("");
+  const field = useRef<HTMLInputElement>(null);
+  const focusField = useRef(false);
+  const voice = useVoiceInput({
+    session: w.session,
+    tenant: w.tenant,
+    // The transcript goes into the box, so it can be checked before sending.
+    onText: (text) => {
+      setInput((current) => (current ? `${current} ${text}` : text).slice(0, 2000));
+      focusField.current = true;
+    },
+    onError: setError,
+  });
+  const voiceActive = voice.state !== "idle";
+  // The box is disabled while transcribing, so it can only take focus once that has finished.
+  useEffect(() => {
+    if (voice.state === "idle" && focusField.current) {
+      focusField.current = false;
+      field.current?.focus();
+    }
+  }, [voice.state]);
   const history = useRemote<{ id: string; title: string }[]>(
     "/v1/conversations",
     { ...w, revision: w.revision + historyRevision },
@@ -143,7 +169,7 @@ export function ChatView({
           <h1>Ask CampusOS</h1>
           <p>Less searching. More knowing.</p>
         </div>
-        <Button variant="outline" onClick={newChat} disabled={busy}>
+        <Button className="new-chat" variant="outline" onClick={newChat} disabled={busy}>
           <Plus size={15} />
           New chat
         </Button>
@@ -268,15 +294,55 @@ export function ChatView({
           </label>
           <input
             id="chat-question"
-            placeholder="Ask anything about your campus..."
+            ref={field}
+            placeholder={
+              voice.state === "recording"
+                ? "Listening... tap stop when you finish"
+                : voice.state === "transcribing"
+                  ? "Turning your speech into text..."
+                  : "Ask anything about your campus..."
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
             maxLength={2000}
-            disabled={busy}
+            disabled={busy || voiceActive}
           />
+          {voice.state === "recording" && (
+            <span className="voice-timer" aria-hidden="true">
+              {formatSeconds(voice.seconds)}
+            </span>
+          )}
+          {voice.supported && (
+            <Button
+              type="button"
+              variant="outline"
+              className={`voice-button ${voice.state === "recording" ? "recording" : ""}`}
+              onClick={voice.toggle}
+              disabled={busy || voice.state === "transcribing"}
+              aria-pressed={voice.state === "recording"}
+              aria-label={
+                voice.state === "recording" ? "Stop voice input" : "Start voice input"
+              }
+            >
+              {voice.state === "transcribing" ? (
+                <LoaderCircle className="spin" size={18} />
+              ) : voice.state === "recording" ? (
+                <Square size={16} />
+              ) : (
+                <Mic size={18} />
+              )}
+            </Button>
+          )}
+          <span className="sr-only" role="status">
+            {voice.state === "recording"
+              ? `Recording. Stops automatically after ${MAX_RECORDING_SECONDS} seconds.`
+              : voice.state === "transcribing"
+                ? "Turning your speech into text."
+                : ""}
+          </span>
           <Button
             type="submit"
-            disabled={busy || !input.trim()}
+            disabled={busy || voiceActive || !input.trim()}
             aria-label="Send question"
           >
             <ArrowUpRight size={20} />

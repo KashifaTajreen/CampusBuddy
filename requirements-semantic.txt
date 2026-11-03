@@ -1,2 +1,5 @@
+-r backend/requirements.txt
 # Optional; never downloaded by the application. Install only on capable laptops.
 sentence-transformers>=3,<6
+# Layout-aware PDF parsing with table recovery and OCR (DOCUMENT_PARSER=docling).
+docling>=2.50,<3

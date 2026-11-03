@@ -16,6 +16,23 @@ class Settings(BaseSettings):
     supabase_storage_bucket: str = "campus-sources"
     storage_backend: str = "local"
     embedding_model_path: str = ""
+    # auto | none | ollama | gemini. "auto" uses Gemini only when a key is set; without an LLM
+    # the assistant stays deterministic and extractive.
+    llm_provider: str = "auto"
+    rate_limit_per_minute: int = 120
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen3.5:9b"
+    ollama_embedding_model: str = ""
+    ollama_num_ctx: int = 8192
+    llm_timeout_seconds: float = 90
+    # regex | hybrid. Hybrid sends longer or unmatched questions to the tool-calling agent.
+    routing_mode: str = "regex"
+    reranker_model_path: str = ""
+    retrieval_min_similarity: float = 0.45
+    # pymupdf | docling
+    document_parser: str = "pymupdf"
+    speech_model: str = "data/models/faster-whisper-small"
+    speech_language: str = "en"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     google_client_id: str = ""

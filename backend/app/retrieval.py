@@ -1,15 +1,20 @@
 """Permission filtering precedes vector / keyword retrieval. No global result cache."""
 
+import io
+import logging
 import re
 from functools import lru_cache
 from pathlib import Path
 import numpy as np
-from sqlalchemy import select, func, cast
+from sqlalchemy import select, func, cast, literal_column
 from pgvector.sqlalchemy import Vector
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from backend.app.ai import OllamaProvider, ProviderError
 from backend.app.config import settings
-from backend.app.models import Document, DocumentChunk
+from backend.app.models import Document, DocumentChunk, EMBEDDING_DIMENSION
+
+logger = logging.getLogger("campus.retrieval")
 
 
 @lru_cache(maxsize=1)
@@ -21,22 +26,61 @@ def semantic_model():
         from sentence_transformers import SentenceTransformer
 
         model = SentenceTransformer(path, local_files_only=True)
-        if model.get_sentence_embedding_dimension() != 384:
-            raise ValueError("Use a 384-dimensional embedding model.")
+        if model.get_sentence_embedding_dimension() != EMBEDDING_DIMENSION:
+            raise ValueError(f"Use a {EMBEDDING_DIMENSION}-dimensional embedding model.")
         return model
     except ImportError:
         return None
 
 
+class EmbeddingUnavailable(ValueError):
+    """The configured embedding model failed. Never replaced with invented vectors."""
+
+
 def embeddings(texts):
+    config = settings()
+    if config.ollama_embedding_model:
+        try:
+            vectors = OllamaProvider().embed(texts, config.ollama_embedding_model)
+        except ProviderError as exc:
+            raise EmbeddingUnavailable("The embedding model is unavailable. Try again shortly.") from exc
+        if any(len(v) != EMBEDDING_DIMENSION for v in vectors):
+            raise EmbeddingUnavailable(f"Use a {EMBEDDING_DIMENSION}-dimensional embedding model.")
+        return vectors, "ollama:" + config.ollama_embedding_model
     model = semantic_model()
     if model is not None:
         return model.encode(texts, normalize_embeddings=True).tolist(), "sentence-transformers:" + Path(
-            settings().embedding_model_path
+            config.embedding_model_path
         ).name
-    return HashingVectorizer(n_features=384, alternate_sign=False, norm="l2").transform(
+    return HashingVectorizer(n_features=EMBEDDING_DIMENSION, alternate_sign=False, norm="l2").transform(
         texts
-    ).toarray().tolist(), "lexical-hashing-v1:384"
+    ).toarray().tolist(), f"lexical-hashing-v2:{EMBEDDING_DIMENSION}"
+
+
+RERANKER_FLOOR = 0.0001
+
+
+@lru_cache(maxsize=1)
+def reranker_model():
+    path = settings().reranker_model_path
+    if not path or not Path(path).is_dir():
+        return None
+    try:
+        from sentence_transformers import CrossEncoder
+
+        # CPU keeps the GPU's memory available for the LLM.
+        return CrossEncoder(path, local_files_only=True, device="cpu")
+    except ImportError:
+        return None
+
+
+def reciprocal_rank_fusion(*rankings, k=60):
+    """Combine rankings by position, because vector and keyword scores are not comparable."""
+    scores = {}
+    for ranking in rankings:
+        for position, item in enumerate(ranking, start=1):
+            scores[item] = scores.get(item, 0.0) + 1.0 / (k + position)
+    return scores
 
 
 def injection(text):
@@ -47,6 +91,27 @@ def injection(text):
             re.I,
         )
     )
+
+
+@lru_cache(maxsize=1)
+def docling_converter():
+    from docling.document_converter import DocumentConverter
+
+    return DocumentConverter()
+
+
+def docling_pages(filename, content):
+    """Layout-aware Markdown per page, or None so the caller keeps the PyMuPDF text layer."""
+    try:
+        from docling.datamodel.base_models import DocumentStream
+
+        result = docling_converter().convert(DocumentStream(name=filename, stream=io.BytesIO(content)))
+        document = result.document
+        pages = [(n, document.export_to_markdown(page_no=n)) for n in sorted(document.pages)]
+    except Exception as exc:  # Docling raises many library-specific errors; parsing must still work.
+        logger.warning("Docling parsing unavailable: %s", type(exc).__name__)
+        return None
+    return pages if any(text.strip() for _, text in pages) else None
 
 
 def extract_pages(filename, content):
@@ -65,6 +130,8 @@ def extract_pages(filename, content):
                 pages = [(i + 1, p.get_text()) for i, p in enumerate(document)]
         except RuntimeError as exc:
             raise ValueError("Unreadable PDF. Export it again and retry.") from exc
+        if settings().document_parser == "docling":
+            pages = docling_pages(filename, content) or pages
     elif suffix in (".txt", ".md"):
         try:
             pages = [(1, content.decode("utf-8-sig"))]
@@ -79,21 +146,55 @@ def extract_pages(filename, content):
     return pages
 
 
+HEADING = re.compile(
+    r"^(?:#{1,6}\s+(?P<md>.+)|(?P<num>\d+(?:\.\d+)*[.)]?\s+[A-Z].{2,78})|(?P<caps>[A-Z][A-Z0-9 &/,:()-]{3,78}))$"
+)
+
+
+def heading_of(line):
+    match = HEADING.match(line.strip())
+    if not match:
+        return None
+    return (match["md"] or match["num"] or match["caps"]).strip(" #:")[:300]
+
+
+def split_sections(raw, current):
+    """Split one page at its headings, carrying the open section across page breaks."""
+    sections = []
+    body = []
+    for line in raw.splitlines():
+        heading = heading_of(line)
+        if heading:
+            if "".join(body).strip():
+                sections.append((current, "\n".join(body)))
+            body = []
+            current = heading
+        else:
+            body.append(line)
+    if "".join(body).strip():
+        sections.append((current, "\n".join(body)))
+    return sections, current
+
+
 def chunks(pages):
+    """Return (page, section, text) passages, about 1,000 characters with 120 overlapping."""
     output = []
+    current = ""
     for page, raw in pages:
-        text = re.sub(r"[ \t]+", " ", raw).strip()
-        cursor = 0
-        while cursor < len(text):
-            end = min(cursor + 1000, len(text))
-            if end < len(text):
-                split = max(text.rfind("\n", cursor + 500, end), text.rfind(". ", cursor + 500, end))
-                if split > cursor:
-                    end = split + 1
-            output.append((page, text[cursor:end]))
-            if end == len(text):
-                break
-            cursor = max(cursor + 1, end - 120)
+        sections, current = split_sections(raw, current)
+        for section, body in sections:
+            text = re.sub(r"[ \t]+", " ", body).strip()
+            cursor = 0
+            while cursor < len(text):
+                end = min(cursor + 1000, len(text))
+                if end < len(text):
+                    split = max(text.rfind("\n", cursor + 500, end), text.rfind(". ", cursor + 500, end))
+                    if split > cursor:
+                        end = split + 1
+                output.append((page, section, text[cursor:end]))
+                if end == len(text):
+                    break
+                cursor = max(cursor + 1, end - 120)
     return output
 
 
@@ -116,22 +217,61 @@ class Retrieval:
         base = select(DocumentChunk).where(
             DocumentChunk.tenant_id == c.actor.tenant_id, DocumentChunk.document_id.in_(doc_ids)
         )
-        qvec, model = embeddings([query])
-        keyword_ids = []
+        try:
+            qvec, model = embeddings([query])
+        except EmbeddingUnavailable:
+            # Keyword search still works, and the response reports the reduced mode.
+            qvec, model = None, "keyword-only"
+        semantic_floor = 0.2 if model.startswith("lexical") else settings().retrieval_min_similarity
+        by_id = {}
+        vector_ranked = []
+        keyword_ranked = []
         if c.db.bind.dialect.name == "postgresql":
-            vector = cast(DocumentChunk.embedding, Vector(384)).cosine_distance(qvec[0])
-            semantic = c.db.scalars(
-                base.where(DocumentChunk.embedding_model == model).order_by(vector).limit(40)
-            ).all()
-            rank = func.ts_rank_cd(
-                func.to_tsvector("english", DocumentChunk.text), func.plainto_tsquery("english", query)
+            if qvec is not None:
+                distance = cast(DocumentChunk.embedding, Vector(EMBEDDING_DIMENSION)).cosine_distance(qvec[0])
+                rows = c.db.execute(
+                    base.add_columns((1 - distance).label("similarity"))
+                    .where(DocumentChunk.embedding_model == model)
+                    .where((1 - distance) >= semantic_floor)
+                    .order_by(distance)
+                    .limit(40)
+                ).all()
+                by_id.update({r.id: r for r, _ in rows})
+                vector_ranked = [r.id for r, _ in rows]
+            # Matches the expression of the ix_chunks_fts index.
+            searchable = func.to_tsvector(
+                literal_column("'english'::regconfig"), DocumentChunk.section + " " + DocumentChunk.text
             )
-            keyword = c.db.scalars(base.where(rank > 0).order_by(rank.desc()).limit(40)).all()
-            keyword_ids = [r.id for r in keyword]
-            candidates = list({r.id: r for r in semantic + keyword}.values())
+            rank = func.ts_rank_cd(
+                searchable, func.plainto_tsquery(literal_column("'english'::regconfig"), query)
+            )
+            rows = c.db.scalars(base.where(rank > 0).order_by(rank.desc()).limit(40)).all()
+            by_id.update({r.id: r for r in rows})
+            keyword_ranked = [r.id for r in rows]
         else:
-            candidates = list(c.db.scalars(base.limit(2000)))
-        if not candidates:
+            rows = list(c.db.scalars(base.limit(2000)))
+            by_id.update({r.id: r for r in rows})
+            if qvec is not None:
+                query_vector = np.asarray(qvec[0])
+                similarity = {
+                    r.id: float(np.dot(np.asarray(r.embedding), query_vector))
+                    for r in rows
+                    if r.embedding is not None and r.embedding_model == model
+                }
+                vector_ranked = sorted(
+                    (i for i, value in similarity.items() if value >= semantic_floor),
+                    key=lambda i: -similarity[i],
+                )[:40]
+            if rows:
+                try:
+                    tf = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
+                    matrix = tf.fit_transform([f"{r.section} {r.text}" for r in rows])
+                    lexical = cosine_similarity(tf.transform([query]), matrix)[0]
+                except ValueError:
+                    lexical = np.zeros(len(rows))
+                keyword_ranked = [rows[i].id for i in np.argsort(-lexical)[:40] if lexical[i] >= 0.05]
+        fused = reciprocal_rank_fusion(vector_ranked, keyword_ranked)
+        if not fused:
             return dict(
                 answer="I could not find supporting campus information. Ask an administrator to upload the relevant document.",
                 hits=[],
@@ -139,27 +279,16 @@ class Retrieval:
                 mode=model,
                 missing=True,
             )
-        texts = [r.text for r in candidates]
-        try:
-            tf = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
-            matrix = tf.fit_transform(texts)
-            lexical = cosine_similarity(tf.transform([query]), matrix)[0]
-        except ValueError:
-            lexical = np.zeros(len(texts))
-        scores = []
-        for ix, row in enumerate(candidates):
-            vector_score = (
-                float(np.dot(np.asarray(row.embedding), np.asarray(qvec[0])))
-                if row.embedding is not None and row.embedding_model == model
-                else 0
-            )
-            scores.append(
-                0.7 * lexical[ix] + 0.3 * max(0, vector_score) + (0.04 if row.id in keyword_ids else 0)
-            )
-        picked = sorted(
-            [(r, float(score)) for r, score in zip(candidates, scores) if score >= 0.075],
-            key=lambda pair: -pair[1],
-        )[:limit]
+        ordered = sorted(fused, key=lambda i: -fused[i])[:20]
+        reranker = reranker_model()
+        if reranker is not None:
+            scores = reranker.predict([(query, by_id[i].text) for i in ordered])
+            ranked = sorted(zip(ordered, scores), key=lambda pair: -pair[1])
+            # bge-reranker scores are very small even for correct passages, so this floor only drops
+            # passages that do not address the question. Re-measure it with benchmark_models.py.
+            picked = [(by_id[i], float(score)) for i, score in ranked if score >= RERANKER_FLOOR][:limit]
+        else:
+            picked = [(by_id[i], fused[i]) for i in ordered[:limit]]
         hits = []
 
         def hit(row, score):
@@ -170,6 +299,7 @@ class Retrieval:
                 document_id=doc.id,
                 text=row.text,
                 page=row.page,
+                section=row.section,
                 title=doc.title,
                 published=doc.published,
                 expires=doc.expires,

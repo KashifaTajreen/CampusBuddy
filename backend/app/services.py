@@ -54,6 +54,7 @@ class CampusService:
                 or_(
                     func.lower(CampusRecord.payload["name"].as_string()).like(q),
                     func.lower(CampusRecord.payload["subjects"].as_string()).like(q),
+                    func.lower(CampusRecord.payload["research_areas"].as_string()).like(q),
                     func.lower(CampusRecord.department).like(q),
                 )
             )

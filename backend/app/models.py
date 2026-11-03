@@ -18,6 +18,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
 
+EMBEDDING_DIMENSION = 1024
+
+
 def uid():
     return str(uuid.uuid4())
 
@@ -110,9 +113,10 @@ class DocumentChunk(Owned, Base):
     __tablename__ = "document_chunks"
     document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     page: Mapped[int] = mapped_column(Integer)
+    section: Mapped[str] = mapped_column(String(300), default="", server_default="")
     text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list | None] = mapped_column(
-        JSON().with_variant(Vector(384), "postgresql"), nullable=True
+        JSON().with_variant(Vector(EMBEDDING_DIMENSION), "postgresql"), nullable=True
     )
     embedding_model: Mapped[str] = mapped_column(String(200), default="")
 

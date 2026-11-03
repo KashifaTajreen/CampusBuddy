@@ -6,7 +6,11 @@ Implemented features are backed by executable services and tests. The following 
 
 - No Supabase cloud project, deployed Vercel frontend, hosted Python service or live OAuth connection was created. Those require configuration and acceptance tests.
 - SQLite supports local development. Production requires PostgreSQL; RLS/pgvector tests run only with a disposable PostgreSQL service.
-- Default retrieval embeddings are lexical hashing, with TF-IDF reranking. Semantic retrieval requires an operator-supplied 384-dimensional local model. No large model is bundled or automatically downloaded.
+- Without configuration, retrieval uses lexical hashing, which is not semantic search. Semantic retrieval needs a 1024-dimensional model such as `bge-m3` through Ollama. No large model is bundled or automatically downloaded.
+- Model choices and retrieval floors come from a small Demo Data benchmark (14 LLM cases, 10 answerable and 3 unanswerable retrieval questions, in `artifacts/model-benchmark.json`). The reranker floor was set on those same questions. Re-measure all of them with real institutional documents and questions.
+- Migration `0003_local_ai_search` clears stored embeddings, so documents must be re-indexed after upgrading. It was tested up and down on an empty Supabase PostgreSQL 17 project, not on a database holding existing data. The PostgreSQL tests there used lexical hashing embeddings, not `bge-m3`.
+- Voice input was measured only on clean synthetic speech in WAV and WebM/Opus. Real microphone audio, accents, and Safari and Firefox recordings are untested.
+- Reading tables from PDFs and the Docling parser are covered only by tests with mocked models. Docling may download its own models on first use.
 - Optional Gemini and Google HTTP adapters are implemented but live provider calls are unverified without credentials. Their UI reports configuration and errors rather than pretending to connect.
 - Conflict detection uses administrator-supplied topic/claim metadata. It does not infer every contradiction in arbitrary prose.
 - Faculty linkage uses a stable code and service validation. Academic organizational entities currently live in validated payloads/memberships rather than a complete normalized academic registry.

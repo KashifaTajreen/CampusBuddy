@@ -10,6 +10,7 @@ import {
 import { api, text, prettyDate, type Job, type DataRecord } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { DemoBadge, Empty } from "@/components/result-cards";
+import { TimetableEditor } from "@/components/timetable-editor";
 
 interface SystemInfo {
   verification?: {
@@ -302,6 +303,12 @@ export function AdminView({
               onClick={() => setTab("imports")}
             >
               Import data
+            </button>
+            <button
+              aria-pressed={tab === "timetable"}
+              onClick={() => setTab("timetable")}
+            >
+              Timetable
             </button>
             <button
               aria-pressed={tab === "sources"}
@@ -648,6 +655,8 @@ export function AdminView({
                 </div>
               ))}
             </section>
+          ) : tab === "timetable" ? (
+            <TimetableEditor w={w} />
           ) : tab === "members" ? (
             <Members w={w} />
           ) : (

@@ -56,13 +56,19 @@ Campus, department, program, semester, section, course and classroom identifiers
 
 ## Retrieval
 
-Chunks preserve page number, document version, publication/expiry, topic/claim and original source. Embeddings always have 384 dimensions. Default embeddings are deterministic lexical hashing; they are not presented as semantic intelligence. An operator can install sentence-transformers and supply a pre-downloaded local 384-dimensional model directory. The application never downloads a model implicitly.
+Chunks preserve page number, document version, publication/expiry, topic/claim and original source. Chunks also record the nearest section heading. Embeddings always have 1024 dimensions. They come from an Ollama model such as `bge-m3`, then a local sentence-transformers directory, then deterministic lexical hashing, which is not presented as semantic intelligence. A configured model that is unavailable fails the import rather than storing invented vectors. The application never downloads a model implicitly.
 
-PostgreSQL retrieves bounded pgvector cosine candidates plus full-text candidates, then reranks by lexical/cosine signals. SQLite uses the same permission-filtered corpus with local ranking. Similarity is a ranking signal, not a confidence probability. Changing models requires re-indexing; mixed-model vectors are not compared. A model fingerprint includes its configured directory name; deployments must not replace model contents in place without re-indexing.
+PostgreSQL retrieves bounded pgvector cosine candidates plus full-text candidates and merges them with Reciprocal Rank Fusion (k=60). An optional local cross-encoder then reorders them. If the embedding model is down at query time, search falls back to keywords and reports `keyword-only`. SQLite uses the same permission-filtered corpus with local ranking. Similarity is a ranking signal, not a confidence probability. Changing models requires re-indexing; mixed-model vectors are not compared. A model fingerprint includes its configured directory name; deployments must not replace model contents in place without re-indexing.
 
 Conflict detection compares **recorded claims for a shared topic**, retaining unresolved alternatives. Explicit supersession is recognized. Arbitrary natural-language contradiction detection is not implemented. Expired documents are excluded unless explicitly requested.
 
-Gemini can summarize already-authorized passages. Its output must match a schema and cite only supplied source IDs. Failures fall back to extractive passages. This validates provenance, not the factual truth of every generated sentence. Source content never controls tool selection or execution.
+A local Ollama model or Gemini can summarize already-authorized passages. Output must match a schema and cite only supplied source IDs. Failures fall back to extractive passages. This validates provenance, not the factual truth of every generated sentence. Source content never controls tool selection or execution.
+
+With `ROUTING_MODE=hybrid`, longer or unmatched questions go to a bounded tool-calling agent (`backend/app/agent.py`, at most 4 steps) that uses the same approved tools. It refuses when no tool result grounds the answer, and failures fall back to the deterministic rules.
+
+## Voice input
+
+`POST /v1/speech/transcribe` runs faster-whisper on the CPU. Audio is held in memory only and is never stored or logged. The transcript goes into the question box to be checked; it is never sent automatically.
 
 ## Ingestion and jobs
 

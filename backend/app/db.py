@@ -1,5 +1,5 @@
 from pathlib import Path
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker
 from backend.app.config import settings
 from backend.app.models import Base
@@ -26,6 +26,13 @@ SessionLocal = sessionmaker(engine, expire_on_commit=False)
 def initialize_local():
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(engine)
+        # Local SQLite files skip Alembic, so bring older development databases up to date.
+        columns = {c["name"] for c in inspect(engine).get_columns("document_chunks")}
+        if "section" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE document_chunks ADD COLUMN section VARCHAR(300) NOT NULL DEFAULT ''")
+                )
 
 
 def validate_production_role():

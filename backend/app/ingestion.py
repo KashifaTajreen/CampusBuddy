@@ -22,6 +22,7 @@ from backend.app.models import (
     utcnow,
 )
 from backend.app.schemas import DOMAIN_SCHEMAS, ImportOptions
+from backend.app.extraction import PDF_KINDS, extract_records
 from backend.app.retrieval import extract_pages, chunks, embeddings
 from backend.app.storage import ObjectStore
 from backend.app.auth import resolve_actor
@@ -39,6 +40,17 @@ ALIASES = {
     "start date": "effective_from",
     "end date": "effective_to",
     "office location": "office",
+    "qualifications": "qualification",
+    "highest qualification": "qualification",
+    "degree": "qualification",
+    "years of experience": "experience",
+    "research": "research_areas",
+    "research area": "research_areas",
+    "research areas": "research_areas",
+    "research interests": "research_areas",
+    "biography": "bio",
+    "about": "bio",
+    "profile": "bio",
     "subjects taught": "subjects",
     "estimated protein": "protein",
     "estimated calories": "calories",
@@ -197,6 +209,8 @@ class Ingestion:
             if options.kind == "document"
             else {".csv", ".xlsx", ".json", ".eml"}
             if options.kind == "emails"
+            else {".csv", ".xlsx", ".json", ".pdf"}
+            if options.kind in PDF_KINDS
             else {".csv", ".xlsx", ".json"}
         )
         if Path(filename).suffix.lower() not in allowed:
@@ -262,6 +276,7 @@ class Ingestion:
         source = self.c.source(job.source_id)
         content = self.store.get(source.storage_key)
         options = ImportOptions.model_validate(job.options)
+        extracted = None
         if mapping is not None:
             options.mapping = mapping
             job.options = options.model_dump(mode="json")
@@ -299,6 +314,13 @@ class Ingestion:
                     ]
                 ).encode()
                 filename = "email.json"
+            elif source.filename.lower().endswith(".pdf"):
+                # The model is not deterministic, so it reads the PDF once. Mapping changes reuse these rows.
+                extracted = job.preview.get("extracted") or extract_records(
+                    source.filename, content, options.kind, self.c
+                )
+                content = json.dumps(extracted).encode()
+                filename = "extracted.json"
             else:
                 filename = source.filename
             frame = read_table(filename, content)
@@ -319,6 +341,8 @@ class Ingestion:
                 errors=errors[:100],
                 error_count=len(errors),
             )
+            if extracted is not None:
+                job.preview["extracted"] = extracted
         job.status = "preview"
         job.error = None
         self.c.db.flush()
@@ -351,7 +375,9 @@ class Ingestion:
         if options.kind == "document":
             pages = extract_pages(source.filename, content)
             parts = chunks(pages)
-            vectors, model = embeddings([t for _, t in parts])
+            title = options.title or source.filename
+            # Headings go into the embedding so each passage keeps its document context.
+            vectors, model = embeddings([f"{title} > {section}\n{t}" for _, section, t in parts])
             existing = c.db.scalar(c.scope(Document).where(Document.source_id == source.id))
             if existing:
                 if not job.options.get("reindex"):
@@ -363,12 +389,13 @@ class Ingestion:
                         DocumentChunk.tenant_id == c.actor.tenant_id, DocumentChunk.document_id == existing.id
                     )
                 )
-                for (page, text), vector in zip(parts, vectors):
+                for (page, section, text), vector in zip(parts, vectors):
                     c.db.add(
                         DocumentChunk(
                             tenant_id=c.actor.tenant_id,
                             document_id=existing.id,
                             page=page,
+                            section=section,
                             text=text,
                             embedding=vector,
                             embedding_model=model,
@@ -395,12 +422,13 @@ class Ingestion:
             )
             c.db.add(document)
             c.db.flush()
-            for (page, text), vector in zip(parts, vectors):
+            for (page, section, text), vector in zip(parts, vectors):
                 c.db.add(
                     DocumentChunk(
                         tenant_id=c.actor.tenant_id,
                         document_id=document.id,
                         page=page,
+                        section=section,
                         text=text,
                         embedding=vector,
                         embedding_model=model,
@@ -413,9 +441,15 @@ class Ingestion:
                 rows = job.preview.get("records", [])
                 errors = []
             else:
-                rows, errors = validate_records(
-                    read_table(source.filename, content), options.kind, options.mapping, c, options.department
-                )
+                if source.filename.lower().endswith(".pdf"):
+                    # Import exactly the rows the administrator reviewed, without asking the model again.
+                    extracted = job.preview.get("extracted")
+                    if not extracted:
+                        raise ValueError("Preview this PDF again before importing it.")
+                    frame = read_table("extracted.json", json.dumps(extracted).encode())
+                else:
+                    frame = read_table(source.filename, content)
+                rows, errors = validate_records(frame, options.kind, options.mapping, c, options.department)
             if errors:
                 raise ValueError("Source validation changed. Preview and validate again.")
             for row in rows:

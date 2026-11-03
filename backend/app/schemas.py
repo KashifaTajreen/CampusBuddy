@@ -16,6 +16,10 @@ class FacultyData(Strict):
     office: str = Field(max_length=200)
     office_hours: str = Field(max_length=200)
     contact: str = Field(default="", max_length=200)
+    qualification: str = Field(default="", max_length=200)
+    experience: str = Field(default="", max_length=100)
+    research_areas: str = Field(default="", max_length=500)
+    bio: str = Field(default="", max_length=2000)
 
 
 class TimetableData(Strict):

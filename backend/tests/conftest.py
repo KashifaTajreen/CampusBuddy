@@ -1,9 +1,11 @@
+import os
 import shutil
 from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy.orm import sessionmaker
+os.environ["MCP_ALLOWED_HOSTS"] = '["127.0.0.1:*","localhost:*","testserver"]'  # keep a developer .env from changing test hosts
 from backend.app.db import make_engine
 from backend.app.models import Base, Membership
 from backend.app.seed import seed, DEMO_TENANT

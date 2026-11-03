@@ -20,3 +20,8 @@ data/*token*.json
 artifacts/screenshots/
 artifacts/backend-tests.xml
 artifacts/browser-tests.json
+
+cmps.txt
+
+# Local AI model weights
+data/models/

@@ -64,7 +64,7 @@ Read `README.md` for setup, `docs/architecture.md` for boundaries, `docs/securit
 - Keep preview, mapping, validation, confirmation and processing states distinct. Process large documents in the worker; recheck the uploader's current permissions.
 - Commit processed data and successful job completion atomically. Failed jobs must provide actionable recovery without corrupting existing records.
 - Structured questions use approved tools, not vector search for everything. Preserve tool budgets and validated schemas in REST and MCP.
-- Retrieval must filter permissions before ranking. Default lexical hashing is not semantic embeddings; optional local models must match the 384-dimensional schema and require re-indexing when changed.
+- Retrieval must filter permissions before ranking. Default lexical hashing is not semantic embeddings; optional local models must match the 1024-dimensional schema and require re-indexing when changed.
 - Return supporting sources, honest abstention, expiry and recorded claim conflicts. Similarity scores are ranking signals, not calibrated confidence probabilities.
 - Optional Gemini failures must fall back gracefully. Citation-ID validation does not establish the factual truth of every generated sentence.
 

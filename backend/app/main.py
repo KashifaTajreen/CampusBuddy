@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from backend.app.config import settings
+from backend.app.models import EMBEDDING_DIMENSION
 from backend.app.db import initialize_local, set_identity, validate_production_role
 from backend.app.auth import actor, authenticated_user, get_session, Actor, TOP_ROLES, rate_limit
 from backend.app.models import (
@@ -23,10 +24,19 @@ from backend.app.models import (
     IngestionJob,
     AuditLog,
 )
-from backend.app.schemas import ChatRequest, ImportOptions, MappingRequest, Preferences, MembershipUpdate
+from backend.app.schemas import (
+    ChatRequest,
+    ImportOptions,
+    MappingRequest,
+    Preferences,
+    MembershipUpdate,
+    TimetableData,
+)
 from backend.app.services import CampusService
 from backend.app.router import Router
 from backend.app.tools import ToolKit, TOOLS
+from backend.app.speech import MAX_AUDIO_BYTES, SpeechUnavailable, transcribe
+from backend.app.timetable_admin import TimetableEditor
 from backend.app.ingestion import Ingestion, MAX_BYTES
 from backend.app.storage import ObjectStore
 from backend.app.integrations import router as integration_router
@@ -366,6 +376,41 @@ def chat_stream(body: ChatRequest, c: CampusService = Depends(service)):
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
 
 
+def timetable_editor(c):
+    return TimetableEditor(c, Ingestion(c).store)
+
+
+@app.get("/v1/admin/timetable")
+def admin_timetable(department: str, semester: int, section: str, c: CampusService = Depends(service)):
+    return timetable_editor(c).rows(department[:60], semester, section[:20])
+
+
+@app.post("/v1/admin/timetable")
+def admin_timetable_create(body: TimetableData, c: CampusService = Depends(service)):
+    return timetable_editor(c).create(body)
+
+
+@app.patch("/v1/admin/timetable/{record_id}")
+def admin_timetable_update(record_id: str, body: TimetableData, c: CampusService = Depends(service)):
+    return timetable_editor(c).update(record_id, body)
+
+
+@app.delete("/v1/admin/timetable/{record_id}")
+def admin_timetable_delete(record_id: str, c: CampusService = Depends(service)):
+    return timetable_editor(c).delete(record_id)
+
+
+@app.post("/v1/speech/transcribe")
+def transcribe_speech(file: UploadFile = File(...), c: CampusService = Depends(service)):
+    rate_limit(c.db, f"speech:{c.actor.tenant_id}:{c.actor.user_id}", 20)
+    # Release the database connection before the slow transcription starts.
+    c.db.commit()
+    try:
+        return transcribe(file.file.read(MAX_AUDIO_BYTES + 1))
+    except SpeechUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @app.get("/v1/tools")
 def tool_schemas(c: CampusService = Depends(service)):
     return [
@@ -412,7 +457,8 @@ def job_json(job):
         id=job.id,
         source_id=job.source_id,
         status=job.status,
-        preview=job.preview,
+        # Extracted PDF rows stay on the server; clients read the bounded "records" sample.
+        preview={k: v for k, v in (job.preview or {}).items() if k != "extracted"},
         error=job.error,
         attempts=job.attempts,
         created_at=job.created_at.isoformat(),
@@ -565,10 +611,16 @@ def system(c: CampusService = Depends(service)):
         ],
         audit=[dict(action=a.action, details=a.details, created_at=a.created_at.isoformat()) for a in audit],
         models={
-            "synthesis": "Gemini configured" if settings().gemini_api_key else "Extractive fallback",
-            "embeddings": "Local semantic model"
+            "synthesis": {
+                "ollama": f"Local model: {settings().ollama_model}",
+                "gemini": "Gemini configured" if settings().gemini_api_key else "Extractive fallback",
+                "auto": "Gemini configured" if settings().gemini_api_key else "Extractive fallback",
+            }.get(settings().llm_provider, "Extractive fallback"),
+            "embeddings": f"Local model: {settings().ollama_embedding_model}"
+            if settings().ollama_embedding_model
+            else "Local semantic model"
             if settings().embedding_model_path
-            else "Lexical hashing, 384 dimensions",
+            else f"Lexical hashing, {EMBEDDING_DIMENSION} dimensions",
         },
         tools=list(TOOLS),
         verification=verification,

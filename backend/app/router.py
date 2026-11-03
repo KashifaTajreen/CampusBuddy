@@ -3,8 +3,11 @@ from datetime import date, timedelta
 from time import perf_counter
 from backend.app.tools import ToolKit
 from backend.app.models import QueryTrace
-from backend.app.ai import GeminiProvider
+from backend.app.agent import Agent
+from backend.app.ai import get_provider
+from backend.app.config import settings
 
+AGENT_MIN_WORDS = 5
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
@@ -36,7 +39,14 @@ def parse_time(q):
 class Router:
     def __init__(self, service, provider=None):
         self.c = service
-        self.provider = provider or GeminiProvider()
+        self.provider = provider or get_provider()
+
+    def _agent_turn(self, question, context):
+        """Ask the tool-calling agent, with its own tool budget so a failed turn can fall back."""
+        if settings().routing_mode != "hybrid" or not hasattr(self.provider, "chat"):
+            return None, []
+        tools = ToolKit(self.c, max_calls=6, deadline_seconds=settings().llm_timeout_seconds * 3)
+        return Agent(self.c, self.provider, tools).run(question, context), tools.trace
 
     def ask(self, question, context=None):
         if not question.strip() or len(question) > 2000:
@@ -54,7 +64,16 @@ class Router:
         rows = []
         answer = ""
         extra_sources = []
-        if re.search(r"email|inbox|department send|unread|\bmail\b", q):
+        evidence = []
+        # Short questions are usually exact requests that the fast rules answer directly.
+        long_question = len(question.split()) > AGENT_MIN_WORDS
+        agent_turn, agent_trace = self._agent_turn(question, context) if long_question else (None, [])
+        if agent_turn:
+            route = "Agent"
+            answer, kind, rows, evidence = agent_turn
+            if kind == "faculty" and rows:
+                context["faculty_code"] = rows[0].get("code")
+        elif re.search(r"email|inbox|department send|unread|\bmail\b", q):
             route = "Keyword search"
             kind = "emails"
             query = "internal assessment" if "assessment" in q else "faculty" if "faculty" in q else ""
@@ -256,6 +275,10 @@ class Router:
                 answer = f"Your classes on {on:%A, %d %B}."
             if kind == "classes" and rows:
                 context.update(faculty_code=rows[0]["faculty_code"], date=rows[0]["date"], domain="timetable")
+        elif not long_question and (turn := self._agent_turn(question, context))[0]:
+            route = "Agent"
+            answer, kind, rows, evidence = turn[0]
+            agent_trace = turn[1]
         else:
             answer = "I can find campus classes, food, faculty, notices, events and your authorized emails. Try a subject name or “My next class”. I do not have supporting information for that request."
         if not rows and kind != "text" and not ("could not find" in answer or "Which professor" in answer):
@@ -277,6 +300,7 @@ class Router:
                     gather(item)
 
         gather(rows)
+        gather(evidence)
         sources = []
         for sid in source_ids:
             source = c.source(sid)
@@ -295,7 +319,7 @@ class Router:
                 tenant_id=c.actor.tenant_id,
                 user_id=c.actor.user_id,
                 route=route,
-                tools=tools.trace,
+                tools=agent_trace + tools.trace,
                 latency_ms=elapsed,
                 success=True,
                 result_count=len(rows),
@@ -316,6 +340,6 @@ class Router:
             followups=followups,
             context=context,
             route=route,
-            trace=tools.trace,
+            trace=agent_trace + tools.trace,
             latency_ms=elapsed,
         )

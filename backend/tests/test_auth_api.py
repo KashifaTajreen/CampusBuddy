@@ -31,7 +31,11 @@ def token(key, user, **overrides):
 
 @pytest.fixture
 def client(env, key, monkeypatch, running_api):
-    monkeypatch.setattr(auth, "settings", lambda: SimpleNamespace(supabase_url="https://auth.example.test"))
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        lambda: SimpleNamespace(supabase_url="https://auth.example.test", rate_limit_per_minute=120),
+    )
     monkeypatch.setattr(
         auth,
         "jwks_client",
