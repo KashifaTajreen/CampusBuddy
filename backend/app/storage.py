@@ -56,3 +56,19 @@ class ObjectStore:
                 response.raise_for_status()
                 return response.content
         return self.local_path(key).read_bytes()
+
+    def download(self, service, source_id):
+        """User-facing reads authorize before contacting disk or the object provider."""
+        source = service.original_source(source_id)
+        return source, self.get(source.storage_key)
+
+    def delete(self, key):
+        if not key:
+            return
+        if self.config.storage_backend == "supabase":
+            endpoint = self.url("").rstrip("/")
+            with httpx.Client(timeout=30, follow_redirects=False) as client:
+                response = client.request("DELETE", endpoint, headers=self.headers(), json={"prefixes": [key]})
+                response.raise_for_status()
+        else:
+            self.local_path(key).unlink(missing_ok=True)

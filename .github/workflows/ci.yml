@@ -8,21 +8,22 @@ jobs:
     services:
       postgres:
         image: pgvector/pgvector:pg16
-        env: {POSTGRES_DB: campus_test, POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres}
+        env: {POSTGRES_DB: campus_verify, POSTGRES_USER: campus_verify, POSTGRES_PASSWORD: test-only-ci-password}
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres -d campus_test"
+          --health-cmd "pg_isready -U campus_verify -d campus_verify"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11", cache: pip}
       - run: pip install -r requirements.txt
-      - run: ruff check backend
+      - run: ruff check backend scripts benchmarks
       - run: alembic upgrade head
-        env: {DATABASE_URL: "postgresql+psycopg://postgres:postgres@localhost:5432/campus_test"}
+        env: {DATABASE_URL: "postgresql+psycopg://campus_verify:test-only-ci-password@127.0.0.1:5432/campus_verify"}
       - run: python -m pytest --junitxml=artifacts/backend-tests.xml
-        env: {TEST_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@localhost:5432/campus_test"}
+        env: {TEST_POSTGRES_URL: "postgresql+psycopg://campus_verify:test-only-ci-password@127.0.0.1:5432/campus_verify"}
+      - run: python -m pytest benchmarks
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: backend-results, path: artifacts/}

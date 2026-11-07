@@ -1,6 +1,13 @@
 # Architecture
 
+The current schema head is **0009**. Shared uploads remain private through validation/processing; the same scoped administrator may explicitly review and publish. Events have reviewed metadata plus privately indexed document evidence. Read [publication](publication.md) and [deployment](deployment.md) for the current contracts; earlier phase notes describe historical checkpoints.
+
 CampusOS is a modular monolith. Next.js is the presentation layer; FastAPI owns authorization, business rules and data access. The worker runs the same Python package in a separate process. MCP is another authenticated adapter to the same approved tool dispatcher.
+
+Phase 6 adds local OCR extraction as a durable pre-review worker stage, local
+bounded speech inference as an authenticated input adapter, and optional Redis
+read acceleration with database reauthorization. None replaces the publication,
+membership or retrieval boundaries. See [the Phase 6 flows](phase6.md).
 
 ```mermaid
 flowchart TB
@@ -9,7 +16,7 @@ flowchart TB
   API[FastAPI · issuer/audience/signature/expiry verification]
   Scope[Active membership · tenant · department · owner · role]
   Chat[Conversation ownership · constrained query router]
-  Tools[14 validated domain tools · call/time budgets]
+  Tools[15 validated domain tools · call/time budgets]
   Domain[Timetable · meals · faculty · calendar · email]
   RAG[Permission-filtered hybrid retrieval · citations · expiry/conflicts]
   PG[(Supabase PostgreSQL · pgvector · FTS · RLS)]
@@ -62,11 +69,30 @@ PostgreSQL retrieves bounded pgvector cosine candidates plus full-text candidate
 
 Conflict detection compares **recorded claims for a shared topic**, retaining unresolved alternatives. Explicit supersession is recognized. Arbitrary natural-language contradiction detection is not implemented. Expired documents are excluded unless explicitly requested.
 
-Gemini can summarize already-authorized passages. Its output must match a schema and cite only supplied source IDs. Failures fall back to extractive passages. This validates provenance, not the factual truth of every generated sentence. Source content never controls tool selection or execution.
+Selected-document chat narrows both the authorized document subquery and chunk
+candidate query before vector/keyword ranking. Conflict peers use that same
+selection. Conversation JSON stores only the selected ID and bounded question
+context; switching/clearing resets prior context. Selection updates are owner-only
+and committed immediately; history rechecks document metadata as well as sources.
+No Phase 3 schema/RLS migration was needed. See the
+[engineering walkthrough](ENGINEERING_WALKTHROUGH.md) for exact endpoints and flow.
+
+The optional Gemini, OpenRouter and loopback Ollama adapters can explain already-authorized passages only after explicit enablement and a data policy. Question-bearing external requests require an approved private-data policy reference. Each claim must identify a retrieved chunk, provide an exact quote and preserve numeric values. Failures fall back to extractive passages. These checks validate provenance, not semantic entailment. Source content never controls tool execution. There is no LangGraph runtime. See [Phase 4 routing and privacy](phase4.md).
 
 ## Ingestion and jobs
 
+Shared ingestion stages data before explicit authorized approval and publication.
+Normal domain/retrieval queries require a published source. Structured originals
+have a stricter institution-administrator download policy than their individual
+rows. See [publication controls](publication.md) for transactions, replacement,
+private sources and PostgreSQL enforcement.
+
 Files are bounded, checksummed and stored privately. Structured preview detects columns, accepts mapping and reports row-level validation. Confirmation queues a job. The worker claims with `FOR UPDATE SKIP LOCKED` on PostgreSQL, rechecks the uploader's current membership, and commits domain changes plus job completion atomically. Processing rows are locked during extraction/indexing. A ten-minute claim lease permits recovery from a dead worker. Failed parsing preserves prior institutional records.
+
+Ingestion HTTP endpoints commit job changes before returning success, so an API
+restart cannot lose an acknowledged queue transition. Separate-process API and
+worker restart/concurrency checks are described in
+[integration verification](verification.md).
 
 An unchanged upload by the same user/kind returns its existing job. Structured natural keys avoid duplicate records across different file versions. Documents retain source/version lineage. Re-indexing replaces the same document's chunks. Large PDFs are extracted in the worker; preview shows metadata before confirmation. Local development should run one SQLite worker.
 

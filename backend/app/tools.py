@@ -20,6 +20,12 @@ class DayInput(Strict):
 class FacultyInput(Strict):
     query: str = Field(default="", max_length=200)
     code: str | None = Field(default=None, max_length=60)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    subject: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class NextClassInput(Strict):
+    faculty_code: str | None = Field(default=None, min_length=1, max_length=60)
 
 
 class SearchInput(Strict):
@@ -27,28 +33,47 @@ class SearchInput(Strict):
 
 
 class MenuInput(SearchInput):
+    on: date | None = None
+    meal: Literal["breakfast", "lunch", "dinner"] | None = None
     budget: float = Field(default=100, ge=0, le=10000)
     vegetarian: bool | None = None
     min_protein: float = Field(default=0, ge=0, le=500)
     sort: Literal["price", "protein"] = "price"
+    category: Literal["sweet"] | None = None
+    strict: bool = False
 
 
 class MealInput(Strict):
     budget: float = Field(default=100, ge=0, le=10000)
     vegetarian: bool | None = None
     count: Literal[2, 3] = 2
+    category: Literal["sweet"] | None = None
+    strict: bool = False
 
 
 class DocumentInput(Strict):
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=5, ge=1, le=20)
     include_outdated: bool = False
+    document_id: str | None = Field(default=None, min_length=1, max_length=36)
+    event_id: str | None = Field(default=None,min_length=1,max_length=36)
 
 
 class EventInput(SearchInput):
     start: date | None = None
     days: int = Field(default=14, ge=1, le=90)
     kind: Literal["event", "workshop", "exam", "deadline", "personal"] | None = None
+
+
+class AcademicInput(Strict):
+    start: date | None = None
+    days: int = Field(default=30, ge=1, le=366)
+
+
+class CampusEventInput(EventInput):
+    category:str|None=Field(default=None,max_length=80)
+    status:Literal['all','upcoming','ongoing','past','undated']='upcoming'
+    include_undated:bool=False
 
 
 class ConflictInput(Strict):
@@ -59,6 +84,8 @@ class ConflictInput(Strict):
 class FreeInput(Strict):
     on: date | None = None
     min_minutes: int = Field(default=30, ge=1, le=480)
+    start_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    end_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class EmailInput(SearchInput):
@@ -71,8 +98,9 @@ class NoticeInput(SearchInput):
 
 
 TOOLS = {
+    "get_academic_calendar": (AcademicInput, "Read authorized holidays, class closures and academic dates."),
     "get_my_timetable": (DayInput, "Get your effective section timetable for a campus-local ISO date."),
-    "get_next_class": (Empty, "Get your next class, with faculty and room details."),
+    "get_next_class": (NextClassInput, "Get your next class, optionally for a resolved faculty code."),
     "get_faculty_profile": (FacultyInput, "Search authorized faculty directory records."),
     "find_classroom": (SearchInput, "Find classroom usage in accessible institutional timetables."),
     "search_canteen_items": (MenuInput, "Filter available food by price, diet and estimated protein."),
@@ -83,7 +111,7 @@ TOOLS = {
         "List current accessible notices, optionally including expired records.",
     ),
     "get_examination_schedule": (EventInput, "List examinations from the authorized calendar."),
-    "list_campus_events": (EventInput, "Find relevant events using dates, tags and kind."),
+    "list_campus_events": (CampusEventInput, "Find authorized published campus events by date, category or status. Undated events require explicit inclusion."),
     "detect_schedule_conflicts": (
         ConflictInput,
         "Compute overlaps among your classes and authorized events.",
@@ -102,7 +130,8 @@ class ToolKit:
         self.started = perf_counter()
         self.deadline = deadline_seconds
 
-    def call(self, name, **kwargs):
+    def call(self, tool_name, **kwargs):
+        name = tool_name
         if name not in TOOLS:
             raise ValueError("This tool is not available.")
         if len(self.trace) >= self.max_calls or perf_counter() - self.started > self.deadline:
@@ -113,8 +142,10 @@ class ToolKit:
             data = TOOLS[name][0].model_validate(kwargs).model_dump()
             if name == "get_my_timetable":
                 result = self.c.timetable(**data)
+            elif name == "get_academic_calendar":
+                result = self.c.academic_dates(**data)
             elif name == "get_next_class":
-                result = self.c.next_class()
+                result = self.c.next_class(**data)
             elif name == "get_faculty_profile":
                 result = self.c.faculty(**data)
             elif name == "find_classroom":
@@ -130,7 +161,9 @@ class ToolKit:
             elif name == "get_examination_schedule":
                 data["kind"] = "exam"
                 result = self.c.events(**data)
-            elif name in ("list_campus_events", "get_calendar_events"):
+            elif name=='list_campus_events':
+                result=self.c.event_listing(**data)
+            elif name == "get_calendar_events":
                 result = self.c.events(**data)
             elif name == "detect_schedule_conflicts":
                 result = self.c.conflicts(**data)

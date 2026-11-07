@@ -1,34 +1,17 @@
-# Scope, limitations and roadmap
+# Limitations and deployment boundaries
 
-Implemented features are backed by executable services and tests. The following are explicit limits, not simulated functionality.
+The repository contains implemented application code and automated tests, not a preconfigured institution or production-readiness certificate. [README](../README.md), [publication](publication.md) and [deployment](deployment.md) describe current behavior through revision 0009.
 
-## Current limits
-
-- No Supabase cloud project, deployed Vercel frontend, hosted Python service or live OAuth connection was created. Those require configuration and acceptance tests.
-- SQLite supports local development. Production requires PostgreSQL; RLS/pgvector tests run only with a disposable PostgreSQL service.
-- Default retrieval embeddings are lexical hashing, with TF-IDF reranking. Semantic retrieval requires an operator-supplied 384-dimensional local model. No large model is bundled or automatically downloaded.
-- Optional Gemini and Google HTTP adapters are implemented but live provider calls are unverified without credentials. Their UI reports configuration and errors rather than pretending to connect.
-- Conflict detection uses administrator-supplied topic/claim metadata. It does not infer every contradiction in arbitrary prose.
-- Faculty linkage uses a stable code and service validation. Academic organizational entities currently live in validated payloads/memberships rather than a complete normalized academic registry.
-- Timetable exceptions support cancellation or room changes on a particular date. Complex rotating weeks, substitute faculty, holiday calendars and team-wide free-time optimization need further work.
-- Meal combinations are bounded to 60 available candidate items for CPU control. They are ranked by estimated protein and do not promise globally optimal large-menu nutrition planning.
-- Email summaries expose authorized message excerpts and extracted ISO dates; natural-language date extraction, threading and semantic email retrieval are limited.
-- Google sync is a bounded explicit import. Repeated imports upsert stable natural keys, but deletion/rescheduling reconciliation and continuous sync are incomplete.
-- Student/faculty views share the same domain screens; faculty-specific teaching-load and approval workflows are not implemented.
-- Membership administration can assign/update roles. Complete invitation, suspension and institution lifecycle workflows need expansion.
-- Developer metrics are scoped to the current administrator's activity. No invented global accuracy/latency values are shown.
-- No malware scanning, OCR, full audit immutability, disaster recovery automation, organization SSO or compliance certification.
-- Login uses Supabase's browser session handling. JWT verification does not itself perform online revocation introspection on every request; short token lifetimes and provider account controls matter.
-- Conversation and imported-source retention is an operator responsibility; automatic tenant retention policies are not enabled.
-- Docker Compose configuration is supplied; Docker was unavailable on the build workstation.
-- The initial Alembic schema revision references ORM metadata. Before the first released migration baseline is frozen, replace it with a reviewed immutable schema snapshot; subsequent revisions must be explicit migration operations.
-
-## Next milestones
-
-1. Connect a staging Supabase project; verify actual JWT, bucket, restricted-role RLS, backup/restore and cloud deployment.
-2. Complete academic registry normalization and composite tenant foreign keys, with a migration review.
-3. Add granular document ACLs, institution-specific retention/purge workflows and membership revocation controls.
-4. Run live Google OAuth and Gemini acceptance tests; add encrypted-token rotation and synchronization reconciliation.
-5. Add holiday/rotation timetables, faculty dashboards and multi-student meeting coordination.
-6. Add parser process isolation, security/dependency scanning, load tests and independent penetration testing.
-7. Expand retrieval evaluation with institution-approved data, calibrated abstention and model-specific regression suites.
+- **OCR requires human review.** A real photographed menu can produce a confident-looking wrong price: two preprocessing layouts both read Badam Milk as 45 while the original prints 15. Preview agreement is not factual verification. Review text, names, prices, times and merged timetable cells against the original before publishing. Complex grids and unreadable posters may need manual correction.
+- E5/Whisper/OCR assets are separate optional installations, not included in Git. Lexical hashing is not semantic retrieval. API and worker must use the same embedding identity/dimensions; changing assets needs authorized re-indexing. Event publication requires compatible semantic indexing.
+- Local model synthesis is optional and bounded; timeout/invalid output uses deterministic/extractive fallback. Citation-ID validation does not prove that every sentence is entailed. Prompt-injection detection is defense in depth, not complete protection from all malicious documents.
+- Multilingual routing uses bounded vocabulary and optional local models. Human Kannada/Hindi/mixed-language speech quality and device TTS quality need manual evaluation; synthetic audio tests do not establish human accuracy. Device voice availability varies.
+- Timetable handling supports weekly records, date exceptions, scoped calendars, merged periods and reviewed parallel sessions. No inferred student batch assignments, complex rotating-week planner or universal timetable-layout support. Optional unknown values are not evidence of a missing class/faculty.
+- Meal combinations use bounded candidates and available nutrition; estimated nutrition is labeled. They do not guarantee globally optimal nutrition planning across arbitrarily large menus.
+- Document claim conflicts depend on recorded topic/claim metadata and retrieval; arbitrary contradictions are not all inferred. Exact personal lookups support explicit verified identifiers and fail closed for unsupported formats.
+- Campus entities largely use validated `campus_records` payloads; this is not a fully normalized academic registry. Five roles exist; faculty directory entries do not create a separate faculty login role.
+- Google Gmail/Calendar integration code is present, but broader reconciliation/continuous sync and end-user acceptance remain separate work. This cleanup does not implement or activate those integrations. Phase 7 deployment/integration work remains paused.
+- Live Google OAuth, production Supabase grants/private bucket settings, deployed worker restarts and model behavior must be verified in the selected environment. Repository tests use synthetic identities, disposable data and mocked provider calls except explicitly labeled local asset tests.
+- JWT signature verification does not introspect every Auth session online. Membership revocation is rechecked on requests; JWT validity still depends on expiry/key-cache propagation/provider policies.
+- RLS cannot protect against a compromised database owner or trusted host. Deployment needs secret management, HTTPS, parser isolation/resource limits, backups/restoration drills, retention rules, monitoring and operational review. No malware scanner, immutable audit store or compliance certification is claimed.
+- Historical benchmark scores measure their frozen fixtures/evaluator, not deployment readiness. Generated benchmark outputs and private migration evidence remain ignored local files, not source fixtures.

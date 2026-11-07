@@ -60,7 +60,7 @@ def test_real_stdio_protocol(env):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 listed = await session.list_tools()
-                assert len(listed.tools) == 14
+                assert len(listed.tools) == 15
                 for name, args in [
                     ("get_my_timetable", {"on": "2026-10-29", "at": "14:00"}),
                     ("search_canteen_items", {"budget": 100, "vegetarian": True}),
@@ -86,7 +86,7 @@ def test_real_stdio_protocol(env):
             json.dumps(
                 {
                     "transport": "Official Python MCP SDK stdio",
-                    "tools_discovered": 14,
+                    "tools_discovered": 15,
                     "calls": results,
                     "invalid_input_rejected": True,
                 },

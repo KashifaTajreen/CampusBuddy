@@ -306,6 +306,7 @@ def sync(provider: str, a: Actor = Depends(actor), db=Depends(get_session)):
                         uploaded_by=a.user_id,
                         owner_id=a.user_id,
                         department="All",
+                        publication_status="published",
                     )
                     db.add(source)
                     db.flush()

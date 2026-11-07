@@ -1,0 +1,14 @@
+{
+  "tenant_id": "OWNER_APPROVED_TENANT_UUID",
+  "user_id": "OWNER_APPROVED_TEST_STUDENT_UUID",
+  "department": "AIML",
+  "semester": 5,
+  "section": "A",
+  "benchmark_timestamp": "2026-11-03T10:00:00+05:30",
+  "owner_authorized_existing_credentials": false,
+  "student_and_tenant_confirmed": false,
+  "owner_attests_existing_shared_records_published_student_visible": false,
+  "existing_source_cutoff": "OWNER_APPROVED_ISO_TIMESTAMP",
+  "allowed_departments": ["AIML", "All"],
+  "exclude_admin_unpublished_other_students_and_credentials": true
+}

@@ -1,4 +1,9 @@
 import { createClient, type Session } from "@supabase/supabase-js";
+// The SDK consumes callback URL errors during initialization, before React effects.
+export const AUTH_CALLBACK_ERROR = typeof window === "undefined" ? "" : (
+  new URLSearchParams(window.location.hash.slice(1)).get("error_description") ||
+  new URLSearchParams(window.location.search).get("error_description") || ""
+).slice(0, 300);
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 export const supabase =
@@ -12,6 +17,17 @@ export const supabase =
       })
     : null;
 export const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Public enrollment scope configured by the institution; it grants no membership.
+export const ONBOARDING_TENANT = process.env.NEXT_PUBLIC_ONBOARDING_TENANT_ID || "";
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
 
 export async function api<T>(
   path: string,
@@ -35,10 +51,11 @@ export async function api<T>(
     const error = await response
       .json()
       .catch(() => ({ detail: "The server could not be reached." }));
-    throw new Error(
+    throw new ApiError(
       typeof error.detail === "string"
         ? error.detail
         : "Check your information and try again.",
+      response.status,
     );
   }
   return response.json() as Promise<T>;
@@ -56,14 +73,44 @@ export interface Citation {
   demo: boolean;
   created_at: string;
   url: string;
+  download_allowed?: boolean;
+  title?: string;
+  document_id?: string;
+  pages?: number[];
+  chunk_ids?: string[];
+}
+export interface SelectableDocument {
+  id: string;
+  title: string;
+  source_id: string;
+  category: string;
+  published: string;
+  expires: string | null;
+}
+export interface DocumentPage {
+  documents: SelectableDocument[];
+  next_offset: number | null;
+}
+export interface DocumentSelection {
+  document: SelectableDocument | null;
+  unavailable: boolean;
 }
 export interface Answer {
+  question?: string;
+  language?: "en" | "hi" | "kn";
+  language_preference?: "auto" | "en" | "hi" | "kn";
+  answer_mode?: "structured" | "extractive" | "generated" | "abstained";
+  provider_status?: string;
+  sections?: Answer[];
+  generated_claims?: { text: string; quote: string; chunk_id: string; title: string; page: number }[];
   answer: string;
   kind: string;
   records: DataRecord[];
   sources: Citation[];
   followups: string[];
   conversation_id: string;
+  selected_document?: SelectableDocument | null;
+  evidence_status?: "retrieved_evidence" | "insufficient_evidence" | null;
 }
 export interface Profile {
   user_id: string;
@@ -78,6 +125,7 @@ export interface Profile {
   institution: string;
   demo: boolean;
   timezone: string;
+  needs_onboarding?: boolean;
 }
 export interface Membership {
   tenant_id: string;
@@ -85,6 +133,7 @@ export interface Membership {
   role: string;
   name: string;
   demo: boolean;
+  needs_onboarding?: boolean;
 }
 export interface Overview {
   next_class: DataRecord | null;
@@ -96,11 +145,39 @@ export interface Overview {
 export interface Job {
   id: string;
   source_id: string;
+  filename?: string;
+  demo?: boolean;
+  kind?: string;
+  department?: string;
+  semester?: number | null;
+  section?: string;
+  source_status: string;
   status: string;
   error: string | null;
   attempts: number;
   created_at: string;
   preview: {
+      needs_ocr?: boolean;
+      schema_mismatch?: boolean;
+      suggested_kind?: string;
+      error_groups?: {message:string;count:number;rows:number[]}[];
+    duplicate_check?: {checked: boolean; blocking: boolean; warnings: string[]; exact_sources: string[]; conflicting_sources: string[]};
+    ocr?: boolean;
+    ocr_reviewed?: boolean;
+    ocr_pages?: number[];
+    ocr_issues?: { line?: number; page?: number; message: string }[];
+    detected_type?: string;
+    format?: string;
+    warnings?: string[];
+    editable_rows?: DataRecord[];
+    course_mapping_text?: string;
+    skipped_count?: number;
+    skipped_rows?: {sheet?:string;row:number;reason:string}[];
+    requires_demo?: boolean;
+    overlap_warnings?: string[];
+      parallel_records?: {day:number;start_time:string;subject:string}[];
+    overlap_reviewed?: boolean;
+    defaults?: {effective_from?:string;effective_to?:string;menu_date?:string;menu_location?:string};
     columns?: string[];
     fields?: { name: string; required: boolean }[];
     mapping?: Record<string, string>;
@@ -108,10 +185,49 @@ export interface Job {
     raw?: DataRecord[];
     errors?: { row: number; message: string }[];
     error_count?: number;
+      review_count?: number;
+      review_errors?: {row:number;message:string;fields?:string[]}[];
+      review_rows?: number[];
+      ready_only?: boolean;
+      published_count?: number;
+      event_workflow?: boolean;
+      event_reviewed?: boolean;
+      event_index_ready?: boolean;
+      event_rows?: DataRecord[];
+      event_pages?: {page:number;text:string}[];
+      indexed_chunks?: number;
+      embedding_model?: string;
+      qr_supported?: boolean;
+      qr_url?: string | null;
     valid_count?: number;
     imported_count?: number;
     message?: string;
+    passages?: { page: number; text: string }[];
+      editable_pages?: { page: number; text: string }[];
   };
+}
+
+export interface SourceInfo {
+  student_records?: boolean;
+  publication_status?: string;
+  version?: number | null;
+  replaced_by?: string | null;
+  semester?: number | null;
+  section?: string;
+  file_state?: "active" | "deleted" | "purge_pending" | "purged";
+  id: string;
+  filename: string;
+  kind: string;
+  department: string;
+  demo: boolean;
+  created_at: string;
+  status: string;
+  approved_by: string | null;
+  published_by: string | null;
+  review_note: string;
+  replaces_source_id: string | null;
+  original_download_allowed: boolean;
+  actions: ("approve" | "publish" | "reject" | "revoke")[];
 }
 
 export async function streamChat(
@@ -121,6 +237,8 @@ export async function streamChat(
   tenant: string,
   onDelta: (text: string) => void,
   signal?: AbortSignal,
+  documentId?: string | null,
+  language?: "auto" | "en" | "hi" | "kn",
 ): Promise<Answer> {
   const response = await fetch(API + "/v1/chat/stream", {
     method: "POST",
@@ -130,12 +248,18 @@ export async function streamChat(
       "X-Tenant-ID": tenant,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ question, conversation_id: conversation }),
+    body: JSON.stringify({
+      question,
+      conversation_id: conversation,
+      document_id: documentId,
+      language,
+    }),
   });
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(
+    throw new ApiError(
       error.detail || "Could not answer your question. Try again.",
+      response.status,
     );
   }
   const reader = response.body?.getReader();

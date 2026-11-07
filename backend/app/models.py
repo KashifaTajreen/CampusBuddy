@@ -13,6 +13,8 @@ from sqlalchemy import (
     Integer,
     Boolean,
     Index,
+    CheckConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
@@ -54,24 +56,50 @@ class Membership(Owned, Base):
     interests: Mapped[str] = mapped_column(String(500), default="")
     diet: Mapped[str] = mapped_column(String(30), default="any")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    __table_args__ = (UniqueConstraint("tenant_id", "user_id"),)
+    student_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id"),
+                      Index("uq_membership_student_number", "tenant_id", "student_number", unique=True))
 
 
-class Source(Owned, Base):
+class Scoped:
+    semester: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section: Mapped[str] = mapped_column(String(20), default="All", server_default="All")
+
+
+class Source(Owned, Scoped, Base):
     __tablename__ = "sources"
     filename: Mapped[str] = mapped_column(String(255))
     kind: Mapped[str] = mapped_column(String(30))
     checksum: Mapped[str] = mapped_column(String(64))
     storage_key: Mapped[str] = mapped_column(String(500))
+    file_state: Mapped[str] = mapped_column(String(20), server_default="active")
+    student_records: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     uploaded_by: Mapped[str] = mapped_column(String(36))
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     department: Mapped[str] = mapped_column(String(60), default="All")
     demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    publication_status: Mapped[str] = mapped_column(
+        String(20),
+        CheckConstraint(
+            "publication_status IN ('draft','pending_review','approved','published','rejected','revoked','replaced')",
+            name="ck_source_publication_status",
+        ),
+        server_default="draft",
+    )
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_note: Mapped[str] = mapped_column(String(500), server_default="")
+    replaces_source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    __table_args__ = (UniqueConstraint("tenant_id", "checksum", "kind", "uploaded_by"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "checksum", "kind", "uploaded_by"),
+        Index("ix_source_publication", "tenant_id", "publication_status"),
+    )
 
 
-class CampusRecord(Owned, Base):
+class CampusRecord(Owned, Scoped, Base):
     """Versioned Pydantic payloads, with indexed relational scope and provenance.
 
     Campus, department, program, semester, section, course, classroom, faculty,
@@ -91,7 +119,7 @@ class CampusRecord(Owned, Base):
     )
 
 
-class Document(Owned, Base):
+class Document(Owned, Scoped, Base):
     __tablename__ = "documents"
     title: Mapped[str] = mapped_column(String(300))
     department: Mapped[str] = mapped_column(String(60), default="All")
@@ -115,6 +143,8 @@ class DocumentChunk(Owned, Base):
         JSON().with_variant(Vector(384), "postgresql"), nullable=True
     )
     embedding_model: Mapped[str] = mapped_column(String(200), default="")
+    student_numbers: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    row_data: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
 
 
 class Conversation(Owned, Base):
@@ -144,6 +174,8 @@ class IngestionJob(Owned, Base):
     status: Mapped[str] = mapped_column(String(20), default="preview")
     options: Mapped[dict] = mapped_column(JSON, default=dict)
     preview: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Written only by the trusted worker. Never returned in the public job response.
+    staged_data: Mapped[dict] = mapped_column(JSON, server_default=text("'{}'"))
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -185,3 +217,19 @@ class RateBucket(Base):
     key: Mapped[str] = mapped_column(String(150), primary_key=True)
     window: Mapped[int] = mapped_column(Integer)
     count: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class SectionCode(Owned, Base):
+    __tablename__ = "section_codes"
+    department: Mapped[str] = mapped_column(String(60), index=True)
+    semester: Mapped[int] = mapped_column(Integer)
+    section: Mapped[str] = mapped_column(String(20))
+    code_hash: Mapped[str] = mapped_column(String(64), index=True)
+    salt: Mapped[str] = mapped_column(String(32))
+    created_by: Mapped[str] = mapped_column(String(36))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (
+        Index("ix_section_code_lookup", "tenant_id", "department", "semester", "section", "revoked"),
+    )

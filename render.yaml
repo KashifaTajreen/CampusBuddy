@@ -1,0 +1,64 @@
+# Approval-ready template only. Creating these paid resources requires approval.
+# No automatic migration, seeding, model pulls or deployments.
+services:
+  - type: web
+    name: campusos-api-staging
+    runtime: docker
+    plan: 1c-2g
+    region: singapore
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.scripts.start_service api
+    autoDeployTrigger: "off"
+    healthCheckPath: /ready
+    disk:
+      name: api-approved-models
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - fromGroup: campusos-staging-common
+      - key: DATABASE_URL
+        sync: false
+      - {key: FRONTEND_ORIGIN, sync: false}
+      - {key: SUPABASE_URL, sync: false}
+      - {key: SUPABASE_PUBLISHABLE_KEY, sync: false}
+      - {key: SUPABASE_SERVICE_ROLE_KEY, sync: false}
+      - {key: SUPABASE_STORAGE_BUCKET, sync: false}
+  - type: worker
+    name: campusos-worker-staging
+    runtime: docker
+    plan: 1c-2g
+    region: singapore
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.scripts.start_service worker
+    autoDeployTrigger: "off"
+    disk:
+      name: worker-approved-models
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - fromGroup: campusos-staging-common
+      - key: DATABASE_URL
+        sync: false
+      - {key: FRONTEND_ORIGIN, sync: false}
+      - {key: SUPABASE_URL, sync: false}
+      - {key: SUPABASE_PUBLISHABLE_KEY, sync: false}
+      - {key: SUPABASE_SERVICE_ROLE_KEY, sync: false}
+      - {key: SUPABASE_STORAGE_BUCKET, sync: false}
+envVarGroups:
+  - name: campusos-staging-common
+    envVars:
+      - {key: APP_ENV, value: production}
+      - {key: STORAGE_BACKEND, value: supabase}
+      - {key: EMBEDDING_PROVIDER, value: onnx}
+      - {key: EMBEDDING_MODEL_PATH, value: /var/data/models/semantic-e5}
+      - {key: OCR_ENABLED, value: "true"}
+      - {key: OCR_TESSDATA_PATH, value: /var/data/models/tessdata}
+      - {key: OCR_LANGUAGES, value: eng+hin+kan}
+      - {key: SPEECH_ENABLED, value: "true"}
+      - {key: SPEECH_MODEL_PATH, value: /var/data/models/whisper-tiny}
+      - {key: REDIS_ENABLED, value: "false"}
+      - {key: LLM_ENABLED, value: "false"}
+      - {key: LLM_PROVIDER, value: none}
+      - {key: LLM_DATA_POLICY, value: disabled}

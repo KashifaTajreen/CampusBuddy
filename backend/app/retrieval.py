@@ -1,36 +1,53 @@
 """Permission filtering precedes vector / keyword retrieval. No global result cache."""
 
 import re
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 import numpy as np
-from sqlalchemy import select, func, cast
+from sqlalchemy import func, cast
 from pgvector.sqlalchemy import Vector
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from backend.app.config import settings
 from backend.app.models import Document, DocumentChunk
+from backend.app.ranking import reciprocal_rank_fusion, exact_references
 
 
 @lru_cache(maxsize=1)
 def semantic_model():
+    if settings().embedding_provider == "lexical":
+        return None
     path = settings().embedding_model_path
     if not path or not Path(path).is_dir():
         return None
     try:
+        if settings().embedding_provider in ("auto", "onnx") and (Path(path)/"model_quantized.onnx").is_file():
+            from backend.app.semantic import LocalE5
+            return LocalE5(path)
         from sentence_transformers import SentenceTransformer
 
         model = SentenceTransformer(path, local_files_only=True)
         if model.get_sentence_embedding_dimension() != 384:
             raise ValueError("Use a 384-dimensional embedding model.")
+        digest = hashlib.sha256()
+        for filename in sorted(p for p in Path(path).rglob("*") if p.suffix in (".json", ".safetensors", ".bin", ".model")):
+            digest.update(str(filename.relative_to(path)).encode())
+            with filename.open("rb") as stream:
+                for block in iter(lambda:stream.read(1024*1024), b""):
+                    digest.update(block)
+        model.identity = "sentence-transformers-v2:"+digest.hexdigest()[:32]
         return model
     except ImportError:
         return None
 
 
-def embeddings(texts):
+def embeddings(texts, query=False):
     model = semantic_model()
     if model is not None:
+        if hasattr(model, "identity"):
+            values = model.encode(texts, query=query) if getattr(model, "supports_query_prefix", False) else model.encode(texts, normalize_embeddings=True)
+            return values.tolist(), model.identity
         return model.encode(texts, normalize_embeddings=True).tolist(), "sentence-transformers:" + Path(
             settings().embedding_model_path
         ).name
@@ -50,33 +67,8 @@ def injection(text):
 
 
 def extract_pages(filename, content):
-    if not content or len(content) > 15 * 1024 * 1024:
-        raise ValueError("Upload a nonempty file under 15 MB.")
-    suffix = Path(filename).suffix.lower()
-    if suffix == ".pdf":
-        import fitz
-
-        try:
-            with fitz.open(stream=content, filetype="pdf") as document:
-                if document.needs_pass:
-                    raise ValueError("Unlock this PDF before uploading.")
-                if len(document) > 200:
-                    raise ValueError("Split PDFs larger than 200 pages.")
-                pages = [(i + 1, p.get_text()) for i, p in enumerate(document)]
-        except RuntimeError as exc:
-            raise ValueError("Unreadable PDF. Export it again and retry.") from exc
-    elif suffix in (".txt", ".md"):
-        try:
-            pages = [(1, content.decode("utf-8-sig"))]
-        except UnicodeDecodeError as exc:
-            raise ValueError("Use UTF-8 encoded text.") from exc
-    else:
-        raise ValueError("Use PDF, TXT or Markdown documents.")
-    if not any(t.strip() for _, t in pages):
-        raise ValueError("No readable text found. Run OCR on scanned pages first.")
-    if sum(len(t) for _, t in pages) > 2_000_000:
-        raise ValueError("Split large documents into smaller files.")
-    return pages
+    from backend.app.parsing import parse_file
+    return [tuple(page) for page in parse_file(filename, content)["pages"]]
 
 
 def chunks(pages):
@@ -101,24 +93,64 @@ class Retrieval:
     def __init__(self, service):
         self.c = service
 
-    def search(self, query, limit=5, include_outdated=False):
+    def search(self, query, limit=5, include_outdated=False, document_id=None,event_id=None):
         if not query.strip() or len(query) > 2000:
             raise ValueError("Use a document question of 1–2,000 characters.")
         if not 1 <= limit <= 20:
             raise ValueError("Retrieve 1–20 passages.")
         c = self.c
-        visible = c.scope(Document)
-        if not include_outdated:
-            visible = visible.where(
-                (Document.expires.is_(None)) | (Document.expires >= str(c.clock().date()))
-            )
+        visible = c.document_query(include_outdated)
+        event=None
+        if event_id is not None:
+            event=c.event_record(event_id)
+            visible=visible.where(Document.source_id==event.source_id,Document.category=='Campus Event')
+        if document_id is not None:
+            c.selected_document(document_id, include_outdated)
+            visible = visible.where(Document.id == document_id)
+        from backend.app.document_rows import identifiers, identity_match, mentor_value
+        requested = identifiers(query)
+        mentor_question=bool(re.search(r"mentor",query,re.I))
+        allotment = bool(re.search(r"skill\s*lab|project\s*team|allot|allocated",query,re.I) or
+            (mentor_question and re.search(r"\b(?:my|me|our|us)\b",query,re.I)))
+        number = requested[0] if len(requested)==1 else None
+        def missing_identity(message):
+            return dict(answer=message,hits=[],conflicts=[],mode="exact_identifier",missing=True)
+        if c.actor.role in {"student","canteen_manager"} and (requested or allotment):
+            if not c.actor.student_number:
+                return missing_identity("Your account has no verified USN. Ask a College Admin to verify it; a USN typed in chat cannot establish your identity.")
+            if requested and set(requested) != {c.actor.student_number}:
+                return missing_identity("I can look up only your verified student record. I cannot use another student's USN to access their allotment.")
+            number = c.actor.student_number
         doc_ids = visible.with_only_columns(Document.id)
-        base = select(DocumentChunk).where(
+        base = c.scope(DocumentChunk).where(
             DocumentChunk.tenant_id == c.actor.tenant_id, DocumentChunk.document_id.in_(doc_ids)
         )
-        qvec, model = embeddings([query])
+        if document_id is not None:
+            base = base.where(DocumentChunk.document_id == document_id)
+        if event is not None:
+            base=base.where(DocumentChunk.row_data['event_key'].as_string()==event.natural_key)
+        exact = bool(number)
+        if exact:
+            base = base.where(identity_match(DocumentChunk.student_numbers,number,c.db.bind.dialect.name))
+        # Reference numbers and explicit ISO dates narrow authorized SQL candidates
+        # before embeddings. Similarity cannot substitute a neighboring identifier.
+        for reference in exact_references(query):
+            pattern = r"(^|[^a-z0-9_])" + re.escape(reference) + r"($|[^a-z0-9_])"
+            base = base.where(func.lower(DocumentChunk.text).regexp_match(pattern))
+        if exact:
+            qvec, model = [[0]*384], "exact_identifier"
+        else:
+            try:
+                qvec, model = embeddings([query], query=True)
+            except Exception:
+                qvec = HashingVectorizer(n_features=384, alternate_sign=False, norm="l2").transform([query]).toarray().tolist()
+                model = "lexical-hashing-v1:384"
+        semantic_enabled = not model.startswith("lexical-hashing")
         keyword_ids = []
-        if c.db.bind.dialect.name == "postgresql":
+        if exact:
+            candidates = list(c.db.scalars(base.limit(100)))
+            model = "exact_identifier"
+        elif c.db.bind.dialect.name == "postgresql":
             vector = cast(DocumentChunk.embedding, Vector(384)).cosine_distance(qvec[0])
             semantic = c.db.scalars(
                 base.where(DocumentChunk.embedding_model == model).order_by(vector).limit(40)
@@ -133,7 +165,8 @@ class Retrieval:
             candidates = list(c.db.scalars(base.limit(2000)))
         if not candidates:
             return dict(
-                answer="I could not find supporting campus information. Ask an administrator to upload the relevant document.",
+                answer=("Insufficient evidence: the selected document has no searchable passages."
+                        if document_id else "I could not find supporting campus information. Ask an administrator to upload the relevant document."),
                 hits=[],
                 conflicts=[],
                 mode=model,
@@ -153,11 +186,26 @@ class Retrieval:
                 if row.embedding is not None and row.embedding_model == model
                 else 0
             )
-            scores.append(
-                0.7 * lexical[ix] + 0.3 * max(0, vector_score) + (0.04 if row.id in keyword_ids else 0)
-            )
+            if semantic_enabled:
+                score = 0.65 * max(0, (vector_score-settings().semantic_min_score)/(1-settings().semantic_min_score+1e-9)) + 0.35 * lexical[ix]
+            else:
+                score = 0.7 * lexical[ix] + 0.3 * max(0, vector_score)
+            if exact:
+                mentor = bool(mentor_value((row.row_data or {}).get("values",{})))
+                score = 1.0 + float(mentor and mentor_question) + float(lexical[ix])*.1
+            scores.append(score + (0.04 if row.id in keyword_ids else 0))
+        eligible = {r.id for r, score in zip(candidates, scores) if score >= 0.075}
+        if semantic_enabled and not exact:
+            dense = sorted((r for r in candidates if r.embedding is not None and r.embedding_model == model
+                and float(np.dot(np.asarray(r.embedding),np.asarray(qvec[0]))) >= settings().semantic_min_score),
+                key=lambda r:-float(np.dot(np.asarray(r.embedding),np.asarray(qvec[0]))))
+            sparse = [candidates[i].id for i in sorted(range(len(candidates)),key=lambda i:-lexical[i]) if lexical[i]>0]
+            sparse.extend(key for key in keyword_ids if key not in sparse)
+            fused = reciprocal_rank_fusion([[r.id for r in dense],sparse])
+            scores = [fused.get(r.id,0)*61/2 for r in candidates]
         picked = sorted(
-            [(r, float(score)) for r, score in zip(candidates, scores) if score >= 0.075],
+            [(r, float(score)) for ix, (r, score) in enumerate(zip(candidates, scores))
+             if r.id in eligible and score > 0 and (not document_id or not model.startswith("lexical-hashing") or lexical[ix] > 0)],
             key=lambda pair: -pair[1],
         )[:limit]
         hits = []
@@ -168,6 +216,7 @@ class Retrieval:
             return dict(
                 id=row.id,
                 document_id=doc.id,
+                private=doc.owner_id is not None or source.student_records,
                 text=row.text,
                 page=row.page,
                 title=doc.title,
@@ -182,14 +231,18 @@ class Retrieval:
                 source_filename=source.filename,
                 source_timestamp=source.created_at.isoformat(),
                 demo=source.demo,
-                outdated=bool(doc.expires and doc.expires < str(c.clock().date())),
+                outdated=bool(doc.expires and doc.expires < str(c.local_now().date())),
                 suspicious=injection(row.text),
+                original_download_allowed=c.original_download_allowed(source),
+                match_type="exact_identifier" if exact else "ranked_passage",
+                **(dict(sheet=row.row_data.get("sheet"),row=row.row_data.get("row"),
+                    mentor=mentor_value(row.row_data.get("values",{}))) if row.row_data else {}),
             )
 
         for row, score in picked:
             hits.append(hit(row, score))
         conflicts = []
-        for topic in {h["topic"] for h in hits if h["topic"]}:
+        for topic in {h["topic"] for h in hits if h["topic"] and not exact}:
             peers = list(c.db.scalars(visible.where(Document.topic == topic)))
             # Explicit supersession is authoritative metadata; unresolved claims remain visible.
             superseded = {d.supersedes_id for d in peers if d.supersedes_id}
@@ -205,7 +258,9 @@ class Retrieval:
                             hits.append(item)
                 conflicts.append(dict(topic=topic, sources=group))
         if not hits:
-            answer = "I could not find supporting campus information. Try a specific subject or upload the relevant notice."
+            answer = ("Insufficient evidence: I could not find relevant information in the selected document. "
+                      "Try a more specific question, switch documents, or clear the selection."
+                      if document_id else "I could not find supporting campus information. Try a specific subject or upload the relevant notice.")
         else:
             lines = (
                 [
@@ -223,6 +278,10 @@ class Retrieval:
                 )
                 lines.append(f"{prefix}{h['title']}: {excerpt}")
             answer = "\n\n".join(lines)
+            if exact and mentor_question:
+                mentors = list(dict.fromkeys(h["mentor"] for h in hits if h.get("mentor") and not h["suspicious"]))
+                answer = ("The published spreadsheet lists the faculty mentor as "+"; ".join(mentors)+". See the cited worksheet row."
+                          if mentors else "Your authorized student row was found, but it does not record a faculty mentor. Ask the department to publish the allotment.")
         return dict(
             answer=answer,
             hits=hits,

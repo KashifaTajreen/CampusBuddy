@@ -75,6 +75,7 @@ export function BrowseView({ w, page }: { w: Workspace; page: Page }) {
         events: DataRecord[];
         free_slots: DataRecord[];
         conflicts: DataRecord[];
+        academic: DataRecord[];
       }
   >(path + "?" + params, w);
   const rows = Array.isArray(data) ? data : [];
@@ -218,6 +219,7 @@ export function BrowseView({ w, page }: { w: Workspace; page: Page }) {
         <Loading />
       ) : page === "Calendar" && data && !Array.isArray(data) ? (
         <>
+          <section className="panel" style={{marginBottom:24}}><h2>Academic dates and holidays</h2><RecordList records={data.academic || []} kind="calendar" onSource={w.download} /></section>
           <section className="panel" style={{ marginBottom: 24 }}>
             <div className="panel-heading">
               <h2>

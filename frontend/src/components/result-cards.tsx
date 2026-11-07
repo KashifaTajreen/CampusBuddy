@@ -1,4 +1,5 @@
 "use client";
+import {EventContent} from './event-content';
 import {
   MapPin,
   Clock3,
@@ -10,8 +11,10 @@ import {
   TriangleAlert,
   Mail,
 } from "lucide-react";
-import { type DataRecord, prettyDate, text } from "@/lib/api";
+import { type DataRecord, prettyDate, text as rawText } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+
+function text(value:unknown) { return rawText(value) || "Not Available"; }
 
 export function DemoBadge() {
   return <span className="demo-badge">Demo Data</span>;
@@ -48,7 +51,14 @@ export function RecordCard({
     `${text(a).includes("T") ? text(a).split("T")[1].slice(0, 5) : text(a).slice(0, 5)} – ${text(b).includes("T") ? text(b).split("T")[1].slice(0, 5) : text(b).slice(0, 5)}`;
   const source = typeof r.source_id === "string" ? r.source_id : undefined;
   let content: React.ReactNode;
-  if (kind === "classes")
+  if (kind === "calendar")
+    content = <><div className="record-kicker">{prettyDate(r.start_on)} – {prettyDate(r.end_on)}</div><h3>{text(r.title)}</h3><p>{r.classes_cancelled ? "Classes cancelled by official calendar" : text(r.entry_kind)}</p></>;
+  else if (kind === "availability")
+    content=<><div className="record-kicker">{prettyDate(r.date)} · {text(r.time)}</div><h3>{r.status === "busy" ? "Recorded commitment" : r.status === "schedule_unknown" ? "Timetable coverage unavailable" : "No recorded conflict"}</h3>
+      <p>{r.status === "schedule_unknown" ? "Missing data does not establish free time." : "Check the cited schedule and other personal commitments."}</p>
+      {Array.isArray(r.commitments) && r.commitments.map((item,i)=><p key={i}>{text(asRecord(item).subject || asRecord(item).title)}</p>)}
+    </>;
+  else if (kind === "classes")
     content = (
       <>
         <div className="record-kicker">
@@ -56,6 +66,7 @@ export function RecordCard({
           <span>{timeRange(r.start_time || r.start, r.end_time || r.end)}</span>
         </div>
         <h3>{text(r.subject)}</h3>
+          <p className="subtle">Course code: {text(r.course_code)}</p>
         <div className="record-details">
           <span>
             <MapPin size={14} />
@@ -72,15 +83,15 @@ export function RecordCard({
     content = (
       <>
         <div className="record-kicker">
-          <span className={r.vegetarian ? "veg" : "nonveg"}>
+          <span className={r.vegetarian === true ? "veg" : r.vegetarian === false ? "nonveg" : "subtle"}>
             <Leaf size={13} />
-            {r.vegetarian ? "Vegetarian" : "Non-vegetarian"}
+            {r.vegetarian === true ? "Vegetarian" : r.vegetarian === false ? "Non-vegetarian" : "Diet not specified"}
           </span>
           <strong className="price">₹{text(r.price)}</strong>
         </div>
         <h3>{text(r.name)}</h3>
         <p>
-          {text(r.location)} · {r.available ? "Available" : "Unavailable"}
+          {r.location ? text(r.location) : "Location not specified"} · {r.available ? "Available" : "Unavailable"}
         </p>
         <div className="nutrition">
           {r.protein !== null && r.protein !== undefined
@@ -119,44 +130,7 @@ export function RecordCard({
       </>
     );
   else if (kind === "events")
-    content = (
-      <>
-        <div className="record-kicker">
-          {prettyDate(r.start)}
-          <span>{text(r.kind)}</span>
-        </div>
-        <h3>{text(r.title)}</h3>
-        <div className="record-details">
-          <span>
-            <Clock3 size={14} />
-            {timeRange(r.start, r.end)}
-          </span>
-          <span>
-            <MapPin size={14} />
-            {text(r.location)}
-          </span>
-        </div>
-        {typeof r.can_attend === "boolean" && (
-          <p className={r.can_attend ? "status-good" : "status-warn"}>
-            {r.can_attend ? <Check size={14} /> : <TriangleAlert size={14} />}
-            {r.can_attend
-              ? "Fits your class schedule"
-              : "Overlaps with a class"}
-          </p>
-        )}
-        {!!r.registration_url &&
-          text(r.registration_url).startsWith("https://") && (
-            <a
-              className="text-link"
-              href={text(r.registration_url)}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Register <ExternalLink size={14} />
-            </a>
-          )}
-      </>
-    );
+    content = <EventContent record={r}/>;
   else if (kind === "event_fit") {
     const e = asRecord(r.event);
     const clashes = Array.isArray(r.clashes) ? (r.clashes as DataRecord[]) : [];
@@ -191,9 +165,9 @@ export function RecordCard({
         <p>{items.map((item) => `${item.name}: ₹${item.price}`).join(" · ")}</p>
         <div className="nutrition">
           {text(r.protein)} g estimated protein ·{" "}
-          {items.every((item) => item.vegetarian)
+          {items.every((item) => item.vegetarian === true)
             ? "Vegetarian"
-            : "Contains non-vegetarian items"}
+            : items.some((item) => item.vegetarian === false) ? "Contains non-vegetarian items" : "Diet not fully specified"}
         </div>
       </>
     );
@@ -243,7 +217,7 @@ export function RecordCard({
     content = (
       <>
         <div className="record-kicker">
-          Page {text(r.page)}
+          {r.sheet ? `Worksheet: ${text(r.sheet)} · Row ${text(r.row)}` : `Page ${text(r.page)}`}
           <span>{r.outdated ? "Archived / expired" : "Source passage"}</span>
         </div>
         <h3>{text(r.title)}</h3>
@@ -253,8 +227,7 @@ export function RecordCard({
             : text(r.text)}
         </p>
         <p className="subtle">
-          Published {prettyDate(r.published)} · Similarity {text(r.score)}{" "}
-          (ranking signal)
+          Published {prettyDate(r.published)} · {r.match_type === "exact_identifier" ? "Exact verified identifier match" : `Similarity ${text(r.score)} (ranking signal)`}
         </p>
       </>
     );
@@ -278,11 +251,16 @@ export function RecordCard({
       {content}
       <footer>
         {(r.demo || nestedDemo) && <DemoBadge />}
-        {source && onSource && (
+        {source && onSource && r.original_download_allowed !== false && (
           <Button variant="ghost" size="sm" onClick={() => onSource(source)}>
             <FileText size={13} />
             View source
           </Button>
+        )}
+        {source && r.original_download_allowed === false && (
+          <span className="subtle">
+            Original restricted to institution administrators
+          </span>
         )}
       </footer>
     </article>

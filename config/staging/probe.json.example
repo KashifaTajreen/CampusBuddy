@@ -1,0 +1,23 @@
+{
+  "environment": "staging-test-only",
+  "project_ref": "",
+  "supabase_url": "",
+  "publishable_key": "",
+  "service_role_key": "",
+  "bucket": "",
+  "email": "",
+  "password": "",
+  "expected_user_id": "",
+  "other_email": "",
+  "other_password": "",
+  "other_expected_user_id": "",
+  "admin_email": "",
+  "admin_password": "",
+  "admin_expected_user_id": "",
+  "api_origin": "",
+  "tenant_id": "",
+  "private_document_id": "",
+  "private_source_id": "",
+  "worker_job_id": "",
+  "expected_signing_kid": ""
+}

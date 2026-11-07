@@ -5,5 +5,9 @@
 **/.env*
 data
 artifacts
+.scratch
+backend/tests
+config/staging/*.local.json
+config/staging/*.env
 **/__pycache__
 **/test-results

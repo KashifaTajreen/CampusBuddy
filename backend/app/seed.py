@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from uuid import UUID
 from sqlalchemy import select
 from backend.app.db import SessionLocal, initialize_local
-from backend.app.models import Institution, Membership
+from backend.app.models import Institution, Membership, Source, utcnow
 from backend.app.auth import resolve_actor
 from backend.app.services import CampusService
 from backend.app.ingestion import Ingestion
@@ -75,6 +75,17 @@ def seed(db, user_id, tenant_id=DEMO_TENANT, anchor=None, store=None):
             ingestion.confirm(job)
             ingestion.process(job)
             job.status = "completed"
+            source = db.get(Source, job.source_id)
+            if source.owner_id is None:
+                # Trusted CLI/fixture bootstrap only: synthetic Demo Data is not
+                # represented as independently reviewed institutional material.
+                if not db.get(Institution, tenant_id).demo or not source.demo:
+                    raise ValueError("Demo bootstrap cannot publish real institutional sources.")
+                if kind != "document":
+                    ingestion.activate_records(source, job.staged_data["records"])
+                source.publication_status = "published"
+                source.published_at = utcnow()
+                source.review_note = "Trusted synthetic demo bootstrap; independent approval was not recorded."
             db.flush()
         return job
 
@@ -180,7 +191,7 @@ def seed(db, user_id, tenant_id=DEMO_TENANT, anchor=None, store=None):
                 available=i != 31,
                 calories=price * 4,
                 protein=protein,
-                location="Central Canteen" if i % 2 else "Library Café",
+                location="Campus Canteen",
             )
             for i, (name, price, protein) in enumerate(foods)
         ],

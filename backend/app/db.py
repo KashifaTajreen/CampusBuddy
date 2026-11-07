@@ -16,7 +16,7 @@ def make_engine(url):
             connection.execute("PRAGMA busy_timeout=15000")
 
         return engine
-    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5, pool_timeout=5, pool_recycle=1800)
 
 
 engine = make_engine(settings().database_url)
@@ -25,6 +25,12 @@ SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 def initialize_local():
     if engine.dialect.name == "sqlite":
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        if inspector.has_table("sources") and not {"semester", "section"} <= {c["name"] for c in inspector.get_columns("sources")}:
+            raise RuntimeError("This database needs reviewed migration 0006. Back up and obtain approval before changing existing data.")
+        if inspector.has_table("sources") and "student_records" not in {c["name"] for c in inspector.get_columns("sources")}:
+            raise RuntimeError("This database needs reviewed migration 0007. Back up and obtain approval before changing existing data.")
         Base.metadata.create_all(engine)
 
 
@@ -56,3 +62,13 @@ def set_identity(session, user_id, tenant_id):
             ),
             {"user_id": user_id, "tenant_id": tenant_id},
         )
+
+
+def serialize_sqlite_writes(session):
+    """SQLite has no SELECT FOR UPDATE: acquire its write reservation first."""
+    if session.bind.dialect.name == "sqlite":
+        connection = session.connection().connection.driver_connection
+        if not connection.in_transaction:
+            # Pending query traces must not autoflush an INSERT before BEGIN.
+            with session.no_autoflush:
+                session.execute(text("BEGIN IMMEDIATE"))

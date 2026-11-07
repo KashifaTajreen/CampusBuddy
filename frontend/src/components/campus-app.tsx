@@ -1,4 +1,5 @@
 "use client";
+import {EventsView} from './events-view';
 import { useState, useEffect, useCallback } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { useForm } from "react-hook-form";
@@ -32,11 +33,18 @@ import {
   Settings,
   Users,
   Compass,
+  Sun,
+  Moon,
+  Laptop,
+  Check,
+  Copy,
 } from "lucide-react";
 import {
   supabase,
   api,
   API,
+  ONBOARDING_TENANT,
+  AUTH_CALLBACK_ERROR,
   campusDate,
   prettyDate,
   text,
@@ -74,7 +82,7 @@ export interface Workspace {
 }
 
 export function useRemote<T>(
-  path: string,
+  path: string | null,
   w: Pick<Workspace, "session" | "tenant" | "revision">,
 ) {
   const [data, setData] = useState<T | null>(null);
@@ -85,6 +93,7 @@ export function useRemote<T>(
     setLoading(true);
     setData(null);
     setError("");
+    if (path === null) { setLoading(false); return; }
     api<T>(path, w.session, w.tenant)
       .then((value) => {
         if (live) setData(value);
@@ -134,8 +143,20 @@ const loginSchema = z.object({
   password: z.string().min(8, "Use at least eight characters."),
 });
 
-function Login() {
-  const [error, setError] = useState("");
+function Login({ authError = "" }: { authError?: string }) {
+  const [localTestLogin,setLocalTestLogin]=useState(false);
+  useEffect(()=>{setLocalTestLogin(process.env.NEXT_PUBLIC_ENABLE_TEST_STUDENT_LOGIN==='true'
+    &&['localhost','127.0.0.1','[::1]'].includes(window.location.hostname));},[]);
+  const [loginRole, setLoginRole] = useState("student");
+  const roles = [
+    ["institution_admin", "College Admin", ShieldCheck],
+    ["department_admin", "Department Admin", Users],
+    ["section_admin", "Section Admin", BookOpen],
+    ["canteen_manager", "Canteen Manager", Utensils],
+    ["student", "Student", GraduationCap],
+  ] as const;
+  const [error, setError] = useState(authError);
+  useEffect(() => setError(authError), [authError]);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const {
@@ -146,10 +167,35 @@ function Login() {
   } = useForm<z.infer<typeof loginSchema>>({
     resolver: zodResolver(loginSchema),
   });
+  async function signInWithGoogle(testStudent=false) {
+    if (!supabase) return;
+    if(testStudent&&(!localTestLogin||loginRole!=='student'))return;
+    setBusy(true);
+    setError("");
+    sessionStorage.setItem("campusos-login-role", loginRole);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin,
+          queryParams: {
+            ...(loginRole === "institution_admin"||testStudent ? {} : { hd: "rvce.edu.in" }),
+            prompt: "select_account",
+          },
+        },
+      });
+      if (error) setError(error.message);
+    } catch {
+      setError("Google sign-in could not start. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
   async function submit(values: z.infer<typeof loginSchema>) {
     if (!supabase) return;
     setBusy(true);
     setError("");
+    sessionStorage.setItem("campusos-login-role", loginRole);
     const { error } = await supabase.auth.signInWithPassword(values);
     setError(error?.message || "");
     setBusy(false);
@@ -171,6 +217,17 @@ function Login() {
   }
   return (
     <main className="login-shell">
+      <fieldset className="login-roles">
+        <legend>Choose your workspace</legend>
+        <p>Your verified institution membership determines your access.</p>
+        <div className="role-options">{roles.map(([id, label, Icon]) => (
+          <label key={id} className={`role-option ${loginRole === id ? "selected" : ""}`}>
+            <input type="radio" name="workspace-role" value={id} checked={loginRole === id}
+              aria-label={label} onChange={() => setLoginRole(id)} />
+            <Icon size={19} aria-hidden="true" /><span>{label}</span>
+          </label>
+        ))}</div>
+      </fieldset>
       <section className="login-story">
         <Logo />
         <div>
@@ -241,6 +298,27 @@ function Login() {
                   Check your inbox for the password reset link.
                 </div>
               )}
+              <button
+                type="button"
+                className="google-btn"
+                onClick={()=>signInWithGoogle()}
+                disabled={busy}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                </svg>
+                <span>{loginRole === "institution_admin" ? "Continue with Google" : "Continue with Google (@rvce.edu.in)"}</span>
+              </button>
+              {localTestLogin&&loginRole==='student'&&<>
+                <Button type="button" variant="outline" disabled={busy} onClick={()=>signInWithGoogle(true)}>Test student — configured Google account</Button>
+                <p className="subtle">Local testing only. The backend requires the exact verified account and user ID. A section join code is still required.</p>
+              </>}
+              <div className="auth-divider">
+                <span>or sign in with password</span>
+              </div>
               <form onSubmit={handleSubmit(submit)} noValidate>
                 <div>
                   <label htmlFor="email">Institution email</label>
@@ -289,6 +367,7 @@ function Login() {
                 New here? Your institution administrator can invite you and
                 assign your campus access.
               </p>
+              <p className="subtle">Install CampusOS from your browser menu, where supported. Current campus answers require a connection.</p>
             </>
           )}
         </div>
@@ -297,9 +376,167 @@ function Login() {
   );
 }
 
+
+function SectionOnboardingView({
+  session,
+  tenant,
+  onJoined,
+  onSignOut,
+  accountError = "",
+}: {
+  session: Session;
+  tenant: string;
+  onJoined: () => void;
+  onSignOut: () => void;
+  accountError?: string;
+}) {
+  const [department, setDepartment] = useState("AIML");
+  const [semester, setSemester] = useState("3");
+  const [section, setSection] = useState("A");
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  const departments = [
+    { code: "AIML", name: "Artificial Intelligence & Machine Learning" },
+    { code: "CSE", name: "Computer Science & Engineering" },
+    { code: "ECE", name: "Electronics & Communication Engineering" },
+    { code: "ISE", name: "Information Science & Engineering" },
+    { code: "MECH", name: "Mechanical Engineering" },
+    { code: "CIVIL", name: "Civil Engineering" },
+    { code: "EEE", name: "Electrical & Electronics Engineering" },
+    { code: "BT", name: "Biotechnology" },
+  ];
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!code.trim()) {
+      setError("Please enter the section join code provided by your department or faculty.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api(
+        "/v1/onboarding/join-section",
+        session,
+        tenant,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            department,
+            semester: parseInt(semester, 10),
+            section: section.toUpperCase(),
+            code: code.trim(),
+          }),
+        }
+      );
+      setSuccess(true);
+      setTimeout(() => {
+        onJoined();
+      }, 400);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to join section.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="onboarding-shell">
+      <div className="onboarding-card">
+        <Logo />
+        <div className="eyebrow" style={{ marginTop: 20 }}>SECTION ONBOARDING</div>
+        <h2 style={{ fontSize: 22, marginTop: 4 }}>Connect your campus timetable</h2>
+        <p className="subtle" style={{ margin: "8px 0 20px" }}>
+          Select your class details and enter your section join code to link your verified timetable, faculty, and notices. You only have to enter this once.
+        </p>
+        <ErrorBox message={error || accountError} />
+        {success ? (
+          <div className="success" role="status" style={{ marginTop: 12 }}>
+            Section confirmed! Unlocking your campus workspace…
+          </div>
+        ) : (
+          <form onSubmit={submit} className="onboarding-form">
+            <div className="form-group">
+              <label htmlFor="dept-select">Department</label>
+              <select
+                id="dept-select"
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+              >
+                {departments.map((d) => (
+                  <option key={d.code} value={d.code}>
+                    {d.code} · {d.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="form-row-2">
+              <div className="form-group">
+                <label htmlFor="sem-select">Semester</label>
+                <select
+                  id="sem-select"
+                  value={semester}
+                  onChange={(e) => setSemester(e.target.value)}
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((s) => (
+                    <option key={s} value={s}>
+                      Semester {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label htmlFor="sec-select">Section</label>
+                <select
+                  id="sec-select"
+                  value={section}
+                  onChange={(e) => setSection(e.target.value)}
+                >
+                  {["A", "B", "C", "D"].map((s) => (
+                    <option key={s} value={s}>
+                      Section {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="form-group">
+              <label htmlFor="join-code">Section Join Code</label>
+              <input
+                id="join-code"
+                type="text"
+                placeholder="e.g. AIML3A-9F2B4A"
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <p className="field-hint">
+                Provided by your department administrator, class teacher, or CR.
+              </p>
+            </div>
+            <Button type="submit" disabled={busy} style={{ width: "100%", marginTop: 10 }}>
+              {busy ? <LoaderCircle className="spin" size={17} /> : null}
+              Confirm & Unlock Campus <ArrowRight size={16} />
+            </Button>
+            <Button type="button" variant="ghost" onClick={onSignOut} style={{ width: "100%", marginTop: 4 }}>
+              Sign out
+            </Button>
+          </form>
+        )}
+      </div>
+    </main>
+  );
+}
+
 export function CampusApp() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [membersLoaded, setMembersLoaded] = useState(false);
   const [members, setMembers] = useState<Membership[]>([]);
   const [tenant, setTenant] = useState("");
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -309,44 +546,94 @@ export function CampusApp() {
   const [mobile, setMobile] = useState(false);
   const [revision, setRevision] = useState(0);
   const [queued, setQueued] = useState("");
+  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
+
+  useEffect(() => {
+    const saved = (localStorage.getItem("campusos-theme") as "light" | "dark" | "system") || "system";
+    setTheme(saved);
+    applyTheme(saved);
+  }, []);
+
+  function applyTheme(t: "light" | "dark" | "system") {
+    const root = document.documentElement;
+    if (t === "dark") {
+      root.setAttribute("data-theme", "dark");
+      root.classList.add("dark");
+    } else if (t === "light") {
+      root.setAttribute("data-theme", "light");
+      root.classList.remove("dark");
+    } else {
+      root.removeAttribute("data-theme");
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      if (prefersDark) {
+        root.classList.add("dark");
+      } else {
+        root.classList.remove("dark");
+      }
+    }
+  }
+
+  function cycleTheme() {
+    const next = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
+    setTheme(next);
+    localStorage.setItem("campusos-theme", next);
+    applyTheme(next);
+  }
+
   useEffect(() => {
     if (!supabase) {
       setAuthLoading(false);
       return;
     }
-    supabase.auth.getSession().then(({ data }) => {
+    let live = true;
+    if (AUTH_CALLBACK_ERROR) setAuthError(AUTH_CALLBACK_ERROR);
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!live) return;
       setSession(data.session);
+      if (error) setAuthError(error.message);
       setAuthLoading(false);
+    }).catch(() => {
+      if (live) {
+        setAuthError("Your session could not be restored. Please sign in again.");
+        setAuthLoading(false);
+      }
     });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => {
       setSession(next);
     });
-    return () => data.subscription.unsubscribe();
+    return () => {
+      live = false;
+      data.subscription.unsubscribe();
+    };
   }, []);
   useEffect(() => {
     if (!session) {
       setProfile(null);
       setMembers([]);
       setTenant("");
+      setMembersLoaded(false);
       return;
     }
     let live = true;
+    setMembersLoaded(false);
     setError("");
     api<Membership[]>("/v1/memberships", session, "")
       .then((rows) => {
         if (!live) return;
         setMembers(rows);
+        setMembersLoaded(true);
         const saved = window.localStorage.getItem("campusos-tenant");
+        const preferred = rows.find((m) => m.role === sessionStorage.getItem("campusos-login-role"));
         setTenant((current) =>
           rows.some((m) => m.tenant_id === current)
             ? current
-            : rows.some((m) => m.tenant_id === saved)
+            : preferred?.tenant_id || (rows.some((m) => m.tenant_id === saved)
               ? saved!
-              : rows[0]?.tenant_id || "",
+              : rows[0]?.tenant_id || ""),
         );
-        if (!rows.length)
+        if (!rows.length && !ONBOARDING_TENANT)
           setError(
-            "Your account has no active institution membership. Ask your administrator to grant access.",
+            "Your account has no active institution membership. Ask your administrator to configure student enrollment or grant access.",
           );
       })
       .catch((e) => {
@@ -355,7 +642,7 @@ export function CampusApp() {
     return () => {
       live = false;
     };
-  }, [session]);
+  }, [session, revision]);
   useEffect(() => {
     if (!session || !tenant) return;
     let live = true;
@@ -405,10 +692,26 @@ export function CampusApp() {
     [session, tenant],
   );
   async function signOut() {
-    await supabase?.auth.signOut();
-    setSession(null);
-    setProfile(null);
-    setPage("Home");
+    try {
+      const result = await supabase?.auth.signOut();
+      if (result?.error) {
+        const local = await supabase?.auth.getSession();
+        const message = local?.data.session
+          ? "Sign out could not complete. Please try again."
+          : "Signed out on this browser. Server sign-out could not be confirmed.";
+        setAuthError(message);
+        setError(message);
+        return;
+      }
+      sessionStorage.removeItem("campusos-login-role");
+      localStorage.removeItem("campusos-tenant");
+      setSession(null);
+      setProfile(null);
+      setAuthError("");
+      setPage("Home");
+    } catch {
+      setError("Sign out could not complete. Please try again.");
+    }
   }
   function navigate(next: Page) {
     setPage(next);
@@ -420,7 +723,10 @@ export function CampusApp() {
     navigate("Ask CampusOS");
   }
   if (authLoading) return <Loading />;
-  if (!session) return <Login />;
+  if (!session) return <Login authError={authError} />;
+  if (membersLoaded && members.length === 0 && ONBOARDING_TENANT) {
+    return <SectionOnboardingView session={session} tenant={ONBOARDING_TENANT} onJoined={refresh} onSignOut={signOut} accountError={error} />;
+  }
   if (
     !profile ||
     profile.tenant_id !== tenant ||
@@ -452,10 +758,14 @@ export function CampusApp() {
     refresh,
     revision,
   };
+  if (profile.role === "student" && (profile.needs_onboarding || profile.section === "unassigned" || !profile.section || profile.section === "All")) {
+    return <SectionOnboardingView session={session} tenant={tenant} onJoined={refresh} onSignOut={signOut} accountError={error} />;
+  }
   const admin = [
     "department_admin",
     "institution_admin",
-    "platform_admin",
+    "section_admin",
+    "canteen_manager",
   ].includes(profile.role);
   const primary: [Page, typeof Home][] = [
     ["Home", Home],
@@ -554,13 +864,13 @@ export function CampusApp() {
                 <ShieldCheck size={17} />
                 Admin Console
               </button>
-              <button
-                className={`nav-item ${page === "System Intelligence" ? "active" : ""}`}
+              {profile.role === "institution_admin" && <button
+                className={`nav-item technical-nav ${page === "System Intelligence" ? "active" : ""}`}
                 onClick={() => navigate("System Intelligence")}
               >
                 <Code2 size={17} />
                 System Intelligence
-              </button>
+              </button>}
             </>
           )}
         </nav>
@@ -576,6 +886,7 @@ export function CampusApp() {
             <div className="avatar">{profile.name[0]}</div>
             <div>
               <strong>{profile.name}</strong>
+              <p>{({institution_admin:"College Admin",department_admin:"Department Admin",section_admin:"Section Admin",canteen_manager:"Canteen Manager",student:"Student"} as Record<string,string>)[profile.role]}</p>
               <p>
                 {profile.department} · Sem {profile.semester} ·{" "}
                 {profile.section}
@@ -615,6 +926,9 @@ export function CampusApp() {
             <strong style={{ color: "#334155" }}>{page}</strong>
           </div>
           <div className="top-right">
+            <Button type="button" variant="outline" onClick={signOut} aria-label="Log out" title="Log out of CampusOS">
+              <LogOut size={16} /> Log out
+            </Button>
             <label className="sr-only" htmlFor="institution">
               Institution
             </label>
@@ -635,6 +949,14 @@ export function CampusApp() {
                 </option>
               ))}
             </select>
+            <button
+              className="theme-toggle-btn"
+              onClick={cycleTheme}
+              aria-label={`Current theme: ${theme}. Click to change.`}
+              title={`Theme: ${theme}`}
+            >
+              {theme === "dark" ? <Moon size={17} /> : theme === "light" ? <Sun size={17} /> : <Laptop size={17} />}
+            </button>
             <div className="avatar" aria-hidden="true">
               {profile.name[0]}
             </div>
@@ -653,6 +975,8 @@ export function CampusApp() {
             />
           ) : page === "Admin Console" || page === "System Intelligence" ? (
             <AdminView w={w} developer={page === "System Intelligence"} />
+          ) : page === 'Events' ? (
+            <EventsView w={w}/>
           ) : page === "Settings" ? (
             <SettingsView w={w} />
           ) : (
@@ -669,6 +993,48 @@ export function CampusApp() {
           </footer>
         </main>
       </div>
+      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
+        <button
+          className={`bottom-nav-btn ${page === "Home" ? "active" : ""}`}
+          onClick={() => navigate("Home")}
+          aria-label="Home"
+        >
+          <Home size={19} />
+          <span>Home</span>
+        </button>
+        <button
+          className={`bottom-nav-btn ${page === "Ask CampusOS" ? "active" : ""}`}
+          onClick={() => navigate("Ask CampusOS")}
+          aria-label="Ask CampusOS"
+        >
+          <MessagesSquare size={19} />
+          <span>Chat</span>
+        </button>
+        <button
+          className={`bottom-nav-btn ${page === "Timetable" ? "active" : ""}`}
+          onClick={() => navigate("Timetable")}
+          aria-label="Timetable"
+        >
+          <CalendarDays size={19} />
+          <span>Classes</span>
+        </button>
+        <button
+          className={`bottom-nav-btn ${page === "Canteen" ? "active" : ""}`}
+          onClick={() => navigate("Canteen")}
+          aria-label="Canteen"
+        >
+          <Utensils size={19} />
+          <span>Food</span>
+        </button>
+        <button
+          className={`bottom-nav-btn ${page === "Notices" ? "active" : ""}`}
+          onClick={() => navigate("Notices")}
+          aria-label="Notices"
+        >
+          <FileText size={19} />
+          <span>Notices</span>
+        </button>
+      </nav>
     </div>
   );
 }
@@ -762,7 +1128,7 @@ function HomeView({
         <QuickActions ask={ask} />
         <div className="hero-footnote">
           <ShieldCheck size={12} />
-          Grounded in your institution’s data. Every answer comes with a source.
+          Uses your institution’s published sources, with citations when evidence is available.
         </div>
       </section>
       <div className="section-header">
